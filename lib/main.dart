@@ -13,6 +13,7 @@ import 'core/router/app_router.dart';
 import 'core/theme/app_theme.dart';
 import 'core/storage/storage_service.dart';
 import 'core/network/doh_service.dart';
+import 'core/network/apple_http_transport.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'core/utils/app_utils.dart';
 import 'features/extensions/providers/extensions_controller.dart';
@@ -52,6 +53,7 @@ void main(List<String> args) async {
 
   appLaunchArgs = args;
   WidgetsFlutterBinding.ensureInitialized();
+  if (Platform.isIOS || Platform.isMacOS) configureAppleImageCache();
 
   // Cap Flutter's image cache. Default is 1000 entries / 100 MB which is too
   // generous for low-RAM TVs and even most phones — decoded TMDB posters fill

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'doh_service.dart';
 import 'http_defaults.dart';
+import 'apple_http_transport.dart';
 
 part 'dio_client_provider.g.dart';
 
@@ -42,7 +43,7 @@ Dio dioClient(Ref ref) {
   // Instead of an interceptor (which mangles the URL/Host headers for HTTPS/SNI),
   // we intercept at the socket level. This intercepts socket creation right
   // before the TLS handshake, preserving the original URI host for SNI verification.
-  dio.httpClientAdapter = IOHttpClientAdapter(
+  final ioAdapter = IOHttpClientAdapter(
     createHttpClient: () {
       final client = HttpClient();
       client.idleTimeout = const Duration(minutes: 5);
@@ -107,6 +108,13 @@ Dio dioClient(Ref ref) {
       return client;
     },
   );
+
+  dio.httpClientAdapter = Platform.isIOS || Platform.isMacOS
+      ? AppleHttpClientAdapter(
+          ioAdapter: ioAdapter,
+          useCustomDns: () => DohService.instance.enabled,
+        )
+      : ioAdapter;
 
   return dio;
 }

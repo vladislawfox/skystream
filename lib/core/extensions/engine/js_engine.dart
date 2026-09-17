@@ -16,6 +16,7 @@ import '../../network/cloudflare_bypass.dart';
 import '../../logger/app_logger.dart';
 import '../../network/dio_client_provider.dart';
 import '../../network/http_defaults.dart';
+import '../../network/http_response_metadata.dart';
 
 import 'js_engine_worker.dart';
 
@@ -132,7 +133,7 @@ Future<CappedHttpResponse> fetchCappedPlainBody(
     statusCode: response.statusCode ?? 0,
     body: utf8.decode(buffer.takeBytes(), allowMalformed: true),
     headers: response.headers,
-    realUri: response.realUri,
+    realUri: effectiveResponseUri(response),
   );
 }
 
@@ -1030,7 +1031,7 @@ class CfOnlyCookieInterceptor extends Interceptor {
   ) async {
     final rawCookies = response.headers['set-cookie'];
     if (rawCookies != null && rawCookies.isNotEmpty) {
-      final uri = Uri.parse(response.realUri.toString());
+      final uri = effectiveResponseUri(response);
       final List<io.Cookie> ioCookies = [];
       for (final header in rawCookies) {
         try {
