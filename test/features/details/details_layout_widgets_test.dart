@@ -1,19 +1,25 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:skystream/core/domain/entity/multimedia_item.dart';
 import 'package:skystream/core/extensions/base_provider.dart';
 import 'package:skystream/core/extensions/extension_manager.dart';
 import 'package:skystream/core/providers/device_info_provider.dart';
+import 'package:skystream/core/router/app_router.dart';
+import 'package:skystream/core/services/download_service.dart';
 import 'package:skystream/core/storage/history_repository.dart';
 import 'package:skystream/core/storage/storage_service.dart';
 import 'package:skystream/features/details/presentation/details_controller.dart';
 import 'package:skystream/features/details/presentation/downloaded_file_provider.dart';
 import 'package:skystream/features/details/presentation/widgets/details_layout_widgets.dart';
+import 'package:skystream/features/settings/presentation/player_settings_provider.dart';
 import 'package:skystream/l10n/generated/app_localizations.dart';
+import 'package:skystream/shared/widgets/custom_widgets.dart';
 
 /// Every history getter goes through Hive-backed [StorageService]; the action
 /// row only asks for the resume position, so answer "never watched" and skip
@@ -49,6 +55,20 @@ class _FakeDownloadedFiles extends DownloadedFiles {
 
   @override
   Future<void> checkFile(MultimediaItem item, {Episode? episode}) async {}
+}
+
+class _NoDownloadedFile extends Fake implements DownloadService {
+  @override
+  Future<File?> getDownloadedFile(
+    MultimediaItem item, {
+    Episode? episode,
+  }) async => null;
+}
+
+class _PlaybackHarness {
+  _PlaybackHarness(this.container);
+  final ProviderContainer container;
+  PlayerRouteExtra? pushed;
 }
 
 class _FakeExtensionManager extends ExtensionManager {
@@ -103,37 +123,41 @@ MultimediaItem _item({
   episodes: episodes,
 );
 
-Future<void> _pumpActionButtons(
+Future<_PlaybackHarness> _pumpActionButtons(
   WidgetTester tester, {
   required MultimediaItem item,
   required MultimediaItem? details,
   required bool isMovie,
+  Episode? targetEpisode,
 }) async {
   final container = ProviderContainer(
     overrides: [
       historyRepositoryProvider.overrideWithValue(_NoHistory()),
       downloadedFilesProvider.overrideWith(_FakeDownloadedFiles.new),
+      downloadServiceProvider.overrideWithValue(_NoDownloadedFile()),
+      playerSettingsProvider.overrideWithBuild(
+        (_, _) => const PlayerSettings(),
+      ),
       deviceProfileProvider.overrideWithValue(
         const AsyncValue.data(DeviceProfile()),
       ),
-      detailsControllerProvider(_kUrl).overrideWithValue(
-        DetailsState(
+      detailsControllerProvider(_kUrl).overrideWithBuild(
+        (_, _) => DetailsState(
           details: AsyncValue.data(details),
           isMovie: isMovie,
           item: item,
+          targetEpisode: targetEpisode,
         ),
       ),
     ],
   );
   addTearDown(container.dispose);
-
-  await tester.pumpWidget(
-    UncontrolledProviderScope(
-      container: container,
-      child: MaterialApp(
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
-        supportedLocales: AppLocalizations.supportedLocales,
-        home: Scaffold(
+  final harness = _PlaybackHarness(container);
+  final router = GoRouter(
+    routes: [
+      GoRoute(
+        path: '/',
+        builder: (_, _) => Scaffold(
           body: DetailsActionButtons(
             item: item,
             details: details,
@@ -141,9 +165,29 @@ Future<void> _pumpActionButtons(
           ),
         ),
       ),
+      GoRoute(
+        path: '/player',
+        builder: (_, state) {
+          harness.pushed = state.extra! as PlayerRouteExtra;
+          return const Scaffold(body: Text('Player opened'));
+        },
+      ),
+    ],
+  );
+  addTearDown(router.dispose);
+
+  await tester.pumpWidget(
+    UncontrolledProviderScope(
+      container: container,
+      child: MaterialApp.router(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        routerConfig: router,
+      ),
     ),
   );
   await tester.pump();
+  return harness;
 }
 
 Future<void> _pumpProviderChip(
@@ -176,6 +220,127 @@ Future<void> _pumpProviderChip(
 }
 
 void main() {
+  group('DetailsActionButtons playback', () {
+    for (final episodes in <List<Episode>?>[null, []]) {
+      testWidgets(
+        'a movie with ${episodes == null ? 'null' : 'empty'} episodes '
+        'opens its page in the player',
+        (tester) async {
+          final movie = _item(episodes: episodes);
+          final harness = await _pumpActionButtons(
+            tester,
+            item: movie,
+            details: movie,
+            isMovie: true,
+          );
+
+          await tester.tap(find.text('Play'));
+          await tester.pumpAndSettle();
+
+          expect(find.text('Player opened'), findsOneWidget);
+          expect(harness.pushed!.videoUrl, _kUrl);
+          expect(harness.pushed!.episode, isNull);
+          expect(harness.pushed!.item, same(movie));
+        },
+      );
+    }
+
+    testWidgets('autoplay can launch a movie without episodes', (tester) async {
+      final movie = _item();
+      final harness = await _pumpActionButtons(
+        tester,
+        item: movie,
+        details: movie,
+        isMovie: true,
+      );
+      unawaited(
+        harness.container
+            .read(detailsControllerProvider(_kUrl).notifier)
+            .handlePlayPress(tester.element(find.text('Play')), movie),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(harness.pushed!.videoUrl, _kUrl);
+    });
+
+    testWidgets('a movie keeps its provider-supplied playback entry', (
+      tester,
+    ) async {
+      final movie = _item(
+        episodes: [Episode(name: 'Full movie', url: '$_kUrl/watch')],
+      );
+      final harness = await _pumpActionButtons(
+        tester,
+        item: movie,
+        details: movie,
+        isMovie: true,
+      );
+      await tester.tap(find.text('Play'));
+      await tester.pumpAndSettle();
+
+      expect(harness.pushed!.videoUrl, '$_kUrl/watch');
+    });
+
+    testWidgets('series playback keeps the selected episode', (tester) async {
+      final episodes = [
+        Episode(name: 'E1', url: '$_kUrl/e1', season: 1, episode: 1),
+        Episode(name: 'E2', url: '$_kUrl/e2', season: 1, episode: 2),
+      ];
+      final series = _item(
+        contentType: MultimediaContentType.series,
+        episodes: episodes,
+      );
+      final harness = await _pumpActionButtons(
+        tester,
+        item: series,
+        details: series,
+        isMovie: false,
+        targetEpisode: episodes.last,
+      );
+      await tester.tap(find.textContaining('Play'));
+      await tester.pumpAndSettle();
+
+      expect(harness.pushed!.videoUrl, '$_kUrl/e2');
+      expect(harness.pushed!.episode, same(episodes.last));
+    });
+
+    testWidgets('an unresolved movie keeps Play disabled', (tester) async {
+      await _pumpActionButtons(
+        tester,
+        item: _item(),
+        details: null,
+        isMovie: true,
+      );
+      final button = tester.widget<CustomButton>(
+        find.ancestor(
+          of: find.text('Play'),
+          matching: find.byType(CustomButton),
+        ),
+      );
+      expect(button.onPressed, isNull);
+    });
+
+    testWidgets('a series without episodes keeps Play disabled', (
+      tester,
+    ) async {
+      final series = _item(contentType: MultimediaContentType.series);
+      await _pumpActionButtons(
+        tester,
+        item: series,
+        details: series,
+        isMovie: false,
+      );
+      final button = tester.widget<CustomButton>(
+        find.ancestor(
+          of: find.text('Play'),
+          matching: find.byType(CustomButton),
+        ),
+      );
+      expect(button.onPressed, isNull);
+    });
+  });
+
   group('DetailsActionButtons download affordance', () {
     testWidgets('a movie whose resolved details carry no episodes still '
         'offers Download', (tester) async {

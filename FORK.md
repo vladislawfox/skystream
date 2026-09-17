@@ -2,7 +2,7 @@
 
 This personal fork tracks [akashdh11/skystream](https://github.com/akashdh11/skystream).
 The installed iPhone build uses `ios-local-build`, based on upstream commit
-`71a60612d32c1de2b63b7e99d20444a2c2265a76` (app version `2.7.6+1`).
+`71a60612d32c1de2b63b7e99d20444a2c2265a76` (app version `2.7.6`).
 
 ## Branches and local changes
 
@@ -26,6 +26,10 @@ independently from personal signing:
    bundle identifier. A different developer must choose their own team and
    bundle identifier in Xcode. Certificates, private keys, provisioning
    profiles, service credentials and device identifiers are not included.
+4. Movies returned without an episode list can be played from their details
+   page. The Play button accepts a resolved movie, and playback resolves its
+   page URL when no explicit playback entry exists. Provider-supplied entries
+   and series episode selection retain their existing behavior.
 
 Ukrainian providers are distributed separately in
 [skystream-ukrainian](https://github.com/vladislawfox/skystream-ukrainian).
@@ -107,3 +111,10 @@ the committed lockfile and must be reviewed if that dependency changes.
 
 These checks describe that revision and environment. They do not establish
 compatibility with every provider or guarantee future site behavior.
+
+The movie Play regression was reproduced with failing button-tap and autoplay
+tests, then fixed. All 40 details-screen tests pass (`flutter test
+test/features/details`), including navigation through the real controller and
+playback launcher for movies with null/empty episode lists, an explicit movie
+entry, and a selected series episode. Tests also retain disabled Play while
+details are unavailable or a series has no episodes. Targeted analysis is clean.

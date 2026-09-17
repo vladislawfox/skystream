@@ -594,9 +594,11 @@ class DetailsController extends _$DetailsController {
     }
 
     if (state.isMovie) {
+      // Movie providers may resolve streams directly from the details page.
+      final url = details.episodes?.firstOrNull?.url ?? details.url;
       await ref
           .read(playbackLauncherProvider)
-          .play(context, details.episodes!.first.url, baseItem: details);
+          .play(context, url, baseItem: details);
       return;
     }
 

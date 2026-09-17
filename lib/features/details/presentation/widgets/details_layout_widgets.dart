@@ -149,8 +149,7 @@ class DetailsActionButtons extends HookConsumerWidget {
       autofocus: true,
       onPressed:
           (details != null &&
-              details!.episodes != null &&
-              details!.episodes!.isNotEmpty)
+              (isMovie || (details!.episodes?.isNotEmpty ?? false)))
           ? () async {
               await ref
                   .read(detailsControllerProvider(item.url).notifier)
