@@ -155,6 +155,11 @@ swiftc -parse-as-library -module-cache-path /tmp/vlc-pip-module-cache \
   packages/vlc_player/ios/Tests/VlcPictureInPicturePolicyTests.swift \
   -o /tmp/vlc-pip-policy-tests
 /tmp/vlc-pip-policy-tests
+swiftc -parse-as-library -module-cache-path /tmp/vlc-padding-module-cache \
+  packages/vlc_player/ios/vlc_player/Sources/vlc_player/VlcSampleBufferPadding.swift \
+  packages/vlc_player/ios/Tests/VlcSampleBufferPaddingTests.swift \
+  -o /tmp/vlc-padding-tests
+/tmp/vlc-padding-tests
 ```
 
 On 2026-09-19, these passed: 71 app tests, 121 package tests, and 54 native
@@ -183,6 +188,18 @@ zero backward clock steps during real VLC playback, reset/seek timeline checks
 and actual PiP entry/exit. The signed profile build `2.7.6+4` was installed,
 launched and confirmed running. The user then retested the original stream and
 confirmed that playback is smooth again, without the reported flicker or jumps.
+
+The sample-buffer renderer also extends the visible NV12 edge into the decoder's
+right/bottom padding before enqueueing. This prevents scaling from sampling
+unwritten chroma outside the clean aperture, which can produce a thin green edge
+in both inline playback and PiP. Visible pixels, aperture and presentation timing
+are unchanged. The helper modifies only padding and does not copy a full frame.
+All 17 standalone CoreVideo checks pass, covering luma/chroma edges, odd sizes,
+visible pixel preservation, repeated delivery, full frames and bounded metadata.
+The device suite includes a padded NV12 frame through the actual enqueue path.
+The signed profile build `2.7.6+5` compiled and passed strict code-signature
+verification. Device execution and visual confirmation of the edge correction
+are pending reconnection of the personal iPhone.
 
 Automatic Home Screen entry, close versus restore gestures, audio/subtitle sync,
 calls/headphone interruptions and sustained playback still require hands-on

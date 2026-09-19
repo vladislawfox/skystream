@@ -48,6 +48,50 @@ class RunnerTests: XCTestCase {
                    CGRect(x: 0, y: 0, width: 320, height: 180))
   }
 
+  func testSampleBufferExtendsNV12PaddingWithoutCroppingVisiblePixels() throws {
+    guard #available(iOS 15.0, *) else { throw XCTSkip("Sample-buffer PiP requires iOS 15") }
+    var frame: CVPixelBuffer?
+    XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 320, 192,
+      kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+      [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &frame), kCVReturnSuccess)
+    let buffer = try XCTUnwrap(frame)
+    XCTAssertEqual(CVPixelBufferLockBaseAddress(buffer, []), kCVReturnSuccess)
+    for plane in 0..<2 {
+      let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, plane)
+      let rows = CVPixelBufferGetHeightOfPlane(buffer, plane)
+      let base = try XCTUnwrap(CVPixelBufferGetBaseAddressOfPlane(buffer, plane))
+      memset(base, 0, stride * rows) // Green padding outside a white frame.
+      let visibleRows = plane == 0 ? 180 : 90
+      for row in 0..<visibleRows {
+        memset(base.advanced(by: row * stride), plane == 0 ? 235 : 128, 320)
+      }
+    }
+    CVPixelBufferUnlockBaseAddress(buffer, [])
+    let view = VlcSampleBufferView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
+    defer { view.dispose() }
+    view.enqueue(buffer, position: .zero,
+                 visibleSize: CGSize(width: 320, height: 180), playbackRate: 0)
+    XCTAssertNotEqual(view.displayLayer.status, .failed)
+    XCTAssertEqual(CVPixelBufferLockBaseAddress(buffer, .readOnly), kCVReturnSuccess)
+    defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+    for plane in 0..<2 {
+      let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, plane)
+      let rows = CVPixelBufferGetHeightOfPlane(buffer, plane)
+      let base = try XCTUnwrap(CVPixelBufferGetBaseAddressOfPlane(buffer, plane))
+        .assumingMemoryBound(to: UInt8.self)
+      for row in 0..<rows {
+        let pixels = UnsafeBufferPointer(start: base.advanced(by: row * stride), count: 320)
+        XCTAssertTrue(pixels.allSatisfy { $0 == (plane == 0 ? 235 : 128) },
+                      "Visible pixels and padded row \(row) in plane \(plane) must stay white")
+      }
+    }
+    var description: CMVideoFormatDescription?
+    XCTAssertEqual(CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault,
+      imageBuffer: buffer, formatDescriptionOut: &description), noErr)
+    XCTAssertEqual(CMVideoFormatDescriptionGetCleanAperture(try XCTUnwrap(description), originIsAtTopLeft: true),
+                   CGRect(x: 0, y: 0, width: 320, height: 180))
+  }
+
   func testPictureInPictureUsesSameLayerAndRejectsOffscreenStart() async throws {
     guard #available(iOS 15.0, *) else { throw XCTSkip("Sample-buffer PiP requires iOS 15") }
     guard AVPictureInPictureController.isPictureInPictureSupported() else {

@@ -65,6 +65,8 @@ final class VlcSampleBufferView: UIView, FlutterPlatformView {
     let height = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
     let visibleWidth = visibleSize.width > 0 ? min(width, visibleSize.width) : width
     let visibleHeight = visibleSize.height > 0 ? min(height, visibleSize.height) : height
+    VlcSampleBufferPadding.extendEdges(of: pixelBuffer,
+      visibleWidth: Int(visibleWidth), visibleHeight: Int(visibleHeight))
     // Decoder padding is on the right/bottom. A clean aperture preserves both
     // the visible aspect ratio and the rows, including in AVKit's separate UI.
     CVBufferSetAttachment(pixelBuffer, kCVImageBufferCleanApertureKey, [
