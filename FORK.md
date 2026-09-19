@@ -201,7 +201,8 @@ The signed profile build `2.7.6+5` compiled and passed strict code-signature
 verification. All nine native tests passed on the personal iPhone 16 Pro on
 2026-09-19, including the NV12 padding regression and actual PiP entry/exit
 with zero backward presentation-clock steps. The profile build was installed
-and launched. Visual confirmation on the user's original stream remains pending.
+and launched. The user subsequently accepted build `2.7.6+5` after checking it
+on the iPhone.
 
 Automatic Home Screen entry, close versus restore gestures, audio/subtitle sync,
 calls/headphone interruptions and sustained playback still require hands-on
