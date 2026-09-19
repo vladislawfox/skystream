@@ -2,15 +2,20 @@ import AVKit
 import Flutter
 import UIKit
 
-/// VLC schedules decoded frames against its audio clock. Stamp each arriving
-/// frame at the VLC-aligned timebase time; AVKit uses that same clock for its UI.
+/// VLC already schedules decoded frames against its audio clock. Give AVKit a
+/// continuous presentation clock; coarse VLC progress must not reschedule frames
+/// that are already queued. The PiP time range maps this clock to media position.
 @available(iOS 15.0, *)
 final class VlcSampleBufferView: UIView, FlutterPlatformView {
   override class var layerClass: AnyClass { AVSampleBufferDisplayLayer.self }
   var displayLayer: AVSampleBufferDisplayLayer { layer as! AVSampleBufferDisplayLayer }
   private var timebase: CMTimebase?
   private var disposed = false
-  private var lastPosition: CMTime?
+  private var hasTimeAnchor = false
+
+  var presentationTime: CMTime {
+    timebase.map { CMTimebaseGetTime($0) } ?? .zero
+  }
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -36,11 +41,14 @@ final class VlcSampleBufferView: UIView, FlutterPlatformView {
 
   func synchronize(position: CMTime, playbackRate: Float) {
     guard !disposed, let timebase, position.isNumeric else { return }
-    if lastPosition != position {
+    if !hasTimeAnchor {
       CMTimebaseSetTime(timebase, time: position)
-      lastPosition = position
+      hasTimeAnchor = true
     }
-    CMTimebaseSetRate(timebase, rate: Double(max(0, playbackRate)))
+    let rate = Double(max(0, playbackRate))
+    if CMTimebaseGetRate(timebase) != rate {
+      CMTimebaseSetRate(timebase, rate: rate)
+    }
   }
 
   func enqueue(_ pixelBuffer: CVPixelBuffer, position: CMTime,
@@ -88,7 +96,11 @@ final class VlcSampleBufferView: UIView, FlutterPlatformView {
   func reset() {
     guard !disposed else { return }
     displayLayer.flushAndRemoveImage()
-    synchronize(position: .zero, playbackRate: 0)
+    if let timebase {
+      CMTimebaseSetRate(timebase, rate: 0)
+      CMTimebaseSetTime(timebase, time: .zero)
+    }
+    hasTimeAnchor = false
   }
 
   func dispose() {
@@ -371,9 +383,13 @@ final class VlcPictureInPicture: NSObject, AVPictureInPictureControllerDelegate,
     guard playback.pipDuration > 0 else {
       return CMTimeRange(start: .zero, duration: .positiveInfinity)
     }
+    // Keep the frame clock continuous while reporting VLC's actual position.
+    // AVKit measures elapsed media time relative to the returned range's start.
+    // Moving this range does not retime or reorder already-enqueued video.
+    let start = CMTimeSubtract(view.presentationTime, mediaTime)
     // Include the timebase even at VLC's end position and during duration updates.
     let end = max(playback.pipDuration, playback.pipPosition + 1000)
-    return CMTimeRange(start: .zero, duration: CMTime(value: Int64(end), timescale: 1000))
+    return CMTimeRange(start: start, duration: CMTime(value: Int64(end), timescale: 1000))
   }
 
   func pictureInPictureControllerIsPlaybackPaused(_ pictureInPictureController: AVPictureInPictureController) -> Bool {

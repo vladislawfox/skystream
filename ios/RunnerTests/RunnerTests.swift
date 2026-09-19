@@ -70,7 +70,57 @@ class RunnerTests: XCTestCase {
     await fulfillment(of: [disposed], timeout: 1)
   }
 
-  func testVlcDecodedVideoStartsAndStopsPictureInPicture() async throws {
+  func testCoarseProgressCannotJumpThePresentationClock() throws {
+    guard #available(iOS 15.0, *) else { throw XCTSkip("Sample-buffer PiP requires iOS 15") }
+    let view = VlcSampleBufferView(frame: .zero)
+    defer { view.dispose() }
+    view.synchronize(position: CMTime(seconds: 42, preferredTimescale: 1000), playbackRate: 1)
+    let timebase = try XCTUnwrap(view.displayLayer.controlTimebase)
+    // Advance the real CoreMedia clock as if frames had been presented while
+    // VLC's less frequent progress event was still in flight.
+    CMTimebaseSetTime(timebase, time: CMTime(seconds: 42.4, preferredTimescale: 1000))
+    view.synchronize(position: CMTime(seconds: 42.25, preferredTimescale: 1000), playbackRate: 1)
+    XCTAssertGreaterThanOrEqual(CMTimeGetSeconds(CMTimebaseGetTime(timebase)), 42.4)
+    view.synchronize(position: CMTime(seconds: 42.75, preferredTimescale: 1000), playbackRate: 1)
+    XCTAssertLessThan(CMTimeGetSeconds(CMTimebaseGetTime(timebase)), 42.5)
+    view.synchronize(position: CMTime(seconds: 42.3, preferredTimescale: 1000), playbackRate: 0)
+    XCTAssertEqual(CMTimebaseGetRate(timebase), 0)
+    XCTAssertEqual(CMTimeGetSeconds(CMTimebaseGetTime(timebase)), 42.4, accuracy: 0.05)
+  }
+
+  func testResetReanchorsOnlyAfterDiscardingOldFrames() throws {
+    guard #available(iOS 15.0, *) else { throw XCTSkip("Sample-buffer PiP requires iOS 15") }
+    let view = VlcSampleBufferView(frame: .zero)
+    defer { view.dispose() }
+    view.synchronize(position: CMTime(seconds: 42, preferredTimescale: 1000), playbackRate: 0)
+    view.reset()
+    view.synchronize(position: CMTime(seconds: 7, preferredTimescale: 1000), playbackRate: 0)
+    let timebase = try XCTUnwrap(view.displayLayer.controlTimebase)
+    XCTAssertEqual(CMTimeGetSeconds(CMTimebaseGetTime(timebase)), 7, accuracy: 0.001)
+  }
+
+  func testPipTimelineMapsStableClockToVlcPositionAndSeek() throws {
+    guard #available(iOS 15.0, *) else { throw XCTSkip("Sample-buffer PiP requires iOS 15") }
+    let view = VlcSampleBufferView(frame: .zero)
+    let transport = TestPlayback()
+    let pip = VlcPictureInPicture(view: view, playback: transport)
+    defer { pip.dispose(); view.dispose() }
+    let controller = try XCTUnwrap(pip.controller)
+    pip.setSelected(true)
+    let timebase = try XCTUnwrap(view.displayLayer.controlTimebase)
+    CMTimebaseSetTime(timebase, time: CMTime(seconds: 600, preferredTimescale: 1000))
+    var range = pip.pictureInPictureControllerTimeRangeForPlayback(controller)
+    XCTAssertEqual(CMTimeGetSeconds(range.start), 558, accuracy: 0.001)
+    XCTAssertEqual(CMTimeGetSeconds(range.duration), 120, accuracy: 0.001)
+    pip.pictureInPictureController(controller,
+      skipByInterval: CMTime(seconds: 15, preferredTimescale: 1000), completion: {})
+    range = pip.pictureInPictureControllerTimeRangeForPlayback(controller)
+    XCTAssertEqual(CMTimeGetSeconds(CMTimebaseGetTime(timebase)), 600, accuracy: 0.001)
+    XCTAssertEqual(CMTimeGetSeconds(CMTimeSubtract(CMTimebaseGetTime(timebase), range.start)),
+                   57, accuracy: 0.001)
+  }
+
+  func testVlcDecodedVideoUsesContinuousPresentationAndPictureInPicture() async throws {
     guard #available(iOS 17.4, *) else { throw XCTSkip("Readiness inspection requires iOS 17.4") }
     guard AVPictureInPictureController.isPictureInPictureSupported() else {
       throw XCTSkip("PiP unavailable on this device")
@@ -107,6 +157,23 @@ class RunnerTests: XCTestCase {
     }
     XCTAssertTrue(view.displayLayer.isReadyForDisplay, "VLC must decode into the real AVKit layer")
     XCTAssertNotEqual(view.displayLayer.status, .failed)
+    // VLC progress arrives less often than decoded frames. Updating its UI
+    // position must not rewind AVKit's clock while forward playback continues.
+    let timebase = try XCTUnwrap(view.displayLayer.controlTimebase)
+    var previousTime = CMTimeGetSeconds(CMTimebaseGetTime(timebase))
+    var minimumStep = 0.0
+    var backwardsSteps = 0
+    let playbackDeadline = Date().addingTimeInterval(1.2)
+    while Date() < playbackDeadline {
+      try await Task.sleep(nanoseconds: 5_000_000)
+      let currentTime = CMTimeGetSeconds(CMTimebaseGetTime(timebase))
+      let step = currentTime - previousTime
+      minimumStep = min(minimumStep, step)
+      if step < -0.001 { backwardsSteps += 1 }
+      previousTime = currentTime
+    }
+    print("PiP presentation clock: backwards=\(backwardsSteps), minimumStep=\(minimumStep)")
+    XCTAssertEqual(backwardsSteps, 0, "Forward playback must not rewind the presentation clock")
     let possibleDeadline = Date().addingTimeInterval(5)
     while !controller.isPictureInPicturePossible && Date() < possibleDeadline {
       try await Task.sleep(nanoseconds: 20_000_000)

@@ -172,6 +172,18 @@ verification after the aperture correction. It was installed and launched on
 the personal iPhone 16 Pro; the device reported version `2.7.6`, build `3`, and
 the app remained running after launch.
 
+A subsequent inline-playback regression measured a 13.1 ms backward jump in
+the presentation clock during real VLC playback. Regular progress events now
+leave that clock continuous; play/pause changes its rate, and explicit source
+changes or seeks discard queued frames before reanchoring. PiP maps the clock
+to VLC's media position through the playable time range, preserving progress
+and seek controls without rescheduling video that is already queued.
+All eight native tests passed on the iPhone after this correction, including
+zero backward clock steps during real VLC playback, reset/seek timeline checks
+and actual PiP entry/exit. The signed profile build `2.7.6+4` was installed,
+launched and confirmed running. The user then retested the original stream and
+confirmed that playback is smooth again, without the reported flicker or jumps.
+
 Automatic Home Screen entry, close versus restore gestures, audio/subtitle sync,
 calls/headphone interruptions and sustained playback still require hands-on
 verification on the phone; unit tests and compilation alone do not establish
