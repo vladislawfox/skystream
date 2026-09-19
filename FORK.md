@@ -161,13 +161,16 @@ On 2026-09-19, these passed: 71 app tests, 121 package tests, and 54 native
 policy/frame/geometry checks. Targeted Dart analysis passed. `RunnerTests` also
 contains device tests for the visible sample-buffer layer, timebase, clean
 aperture, background mode, rejected entry, and real VLC decoding with AVKit
-PiP entry/exit. The final device test bundle compiled successfully, but its tests
-have not run: the paired phone was locked, then became unavailable. Run the
-Runner test scheme on a paired, unlocked iPhone.
+PiP entry/exit. All five tests passed on the personal iPhone 16 Pro on 2026-09-19,
+including actual AVKit entry and exit while VLC plays the bundled video fixture.
+The first device run exposed an inverted vertical clean-aperture offset: a
+320x180 frame in a 320x192 buffer started at row 12 instead of row 0. Correcting
+the offset sign made the existing regression pass with the other four tests.
 
 The signed profile build `2.7.6+3` succeeded and passed strict code-signature
-verification. Installation is pending because the phone remained unavailable;
-the previously installed app has not been replaced by this build.
+verification after the aperture correction. It was installed and launched on
+the personal iPhone 16 Pro; the device reported version `2.7.6`, build `3`, and
+the app remained running after launch.
 
 Automatic Home Screen entry, close versus restore gestures, audio/subtitle sync,
 calls/headphone interruptions and sustained playback still require hands-on

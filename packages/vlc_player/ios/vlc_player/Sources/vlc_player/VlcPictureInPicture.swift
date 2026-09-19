@@ -63,7 +63,7 @@ final class VlcSampleBufferView: UIView, FlutterPlatformView {
       kCVImageBufferCleanApertureWidthKey: visibleWidth,
       kCVImageBufferCleanApertureHeightKey: visibleHeight,
       kCVImageBufferCleanApertureHorizontalOffsetKey: (visibleWidth - width) / 2,
-      kCVImageBufferCleanApertureVerticalOffsetKey: (height - visibleHeight) / 2,
+      kCVImageBufferCleanApertureVerticalOffsetKey: (visibleHeight - height) / 2,
     ] as CFDictionary, .shouldPropagate)
 
     CVBufferSetAttachment(pixelBuffer, kCVImageBufferPixelAspectRatioKey, [
