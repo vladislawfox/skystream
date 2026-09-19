@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +10,7 @@ import 'package:skystream/core/storage/storage_service.dart';
 import 'package:skystream/features/player/presentation/vlc/vlc_player_controls.dart';
 import 'package:skystream/features/player/presentation/vlc/vlc_player_screen.dart';
 import 'package:skystream/features/settings/presentation/player_settings_provider.dart';
+import 'package:skystream/features/tracking/data/sync_manager.dart';
 import 'package:skystream/l10n/generated/app_localizations.dart';
 import 'package:vlc_player/vlc_player.dart';
 
@@ -29,15 +31,15 @@ import 'package:vlc_player/vlc_player.dart';
 /// The subject is playback that is actually running, which means the engine
 /// has to be reachable from the test: until the first frame lands the screen
 /// covers the video with its opening overlay and there is no chrome to hide.
-/// The texture path is the one that names its own view - `create` answers with
-/// the id - so the test knows which event channel to speak on. The
-/// platform-view path takes its id from Flutter's process-global registry and
-/// publishes it nowhere.
+/// The test records both texture creation and platform-view creation so it
+/// can send decoded-frame events to the same native player channel on iOS.
 const MethodChannel _pip = MethodChannel('dev.akash.skystream.player/pip');
+const MethodChannel _iosPip = MethodChannel('vlc_player/pip');
 const MethodChannel _vlc = MethodChannel('vlc_player');
 
 const int _viewId = 1;
-const EventChannel _events = EventChannel('vlc_player/events/$_viewId');
+int _activeViewId = _viewId;
+EventChannel get _events => EventChannel('vlc_player/events/$_activeViewId');
 
 final TargetPlatformVariant _texturePlatform = TargetPlatformVariant.only(
   TargetPlatform.windows,
@@ -59,29 +61,55 @@ final ByteData? _wakelockReply = const StandardMessageCodec().encodeMessage(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  final engineCalls = <MethodCall>[];
+  final eventChannels = <EventChannel>[];
+  final createdViews = <int>[];
+
+  void registerEvents(int viewId) {
+    _activeViewId = viewId;
+    final channel = _events;
+    eventChannels.add(channel);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockStreamHandler(
+          channel,
+          MockStreamHandler.inline(onListen: (arguments, sink) {}),
+        );
+  }
+
   setUp(() {
+    engineCalls.clear();
+    createdViews.clear();
+    _activeViewId = _viewId;
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     // The engine and the platform view host answer with nothing. Unmocked
     // they throw MissingPluginException from an unawaited future, which lands
     // on the test rather than on the call site.
     messenger.setMockMethodCallHandler(_vlc, (call) async {
+      engineCalls.add(call);
       if (call.method == 'create') {
         return <String, Object?>{'viewId': _viewId, 'textureId': _viewId};
       }
       return null;
     });
-    messenger.setMockStreamHandler(
-      _events,
-      MockStreamHandler.inline(onListen: (arguments, sink) {}),
-    );
+    registerEvents(_viewId);
     messenger.setMockMessageHandler(
       _wakelockToggle,
       (message) async => _wakelockReply,
     );
+    messenger.setMockMethodCallHandler(SystemChannels.platform_views, (
+      call,
+    ) async {
+      if (call.method == 'create') {
+        final id = (call.arguments as Map)['id'] as int;
+        createdViews.add(id);
+        registerEvents(id);
+      }
+      return null;
+    });
     messenger.setMockMethodCallHandler(
-      SystemChannels.platform_views,
-      (call) async => null,
+      _iosPip,
+      (call) async => call.method == 'enterPip' ? false : null,
     );
   });
 
@@ -89,19 +117,27 @@ void main() {
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     messenger.setMockMethodCallHandler(_vlc, null);
-    messenger.setMockStreamHandler(_events, null);
+    for (final channel in eventChannels) {
+      messenger.setMockStreamHandler(channel, null);
+    }
+    eventChannels.clear();
     messenger.setMockMessageHandler(_wakelockToggle, null);
     messenger.setMockMethodCallHandler(SystemChannels.platform_views, null);
     // The screen registers this one itself; leaving it set outlives the State.
     messenger.setMockMethodCallHandler(_pip, null);
+    messenger.setMockMethodCallHandler(_iosPip, null);
   });
 
   /// Tells the screen the activity has entered or left PiP, over the same
   /// channel `MainActivity.onPictureInPictureModeChanged` uses.
-  Future<void> setPipMode(WidgetTester tester, bool inPip) async {
+  Future<void> setPipMode(
+    WidgetTester tester,
+    bool inPip, {
+    MethodChannel channel = _pip,
+  }) async {
     await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
-      _pip.name,
-      _pip.codec.encodeMethodCall(MethodCall('pipModeChanged', inPip)),
+      channel.name,
+      channel.codec.encodeMethodCall(MethodCall('pipModeChanged', inPip)),
       (_) {},
     );
     await tester.pump();
@@ -133,17 +169,19 @@ void main() {
   /// playing stage: `resolvePlayback` short-circuits to a direct stream, so
   /// the screen gets there with no plugin behind it. The resume lookup is the
   /// only other thing that would reach storage, and [_NoHistory] answers it.
-  Future<void> pumpPlayingScreen(WidgetTester tester) async {
+  Future<void> pumpPlayingScreen(
+    WidgetTester tester, {
+    DeviceProfile profile = const DeviceProfile(isTv: true),
+  }) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          deviceProfileProvider.overrideWithValue(
-            const AsyncValue.data(DeviceProfile(isTv: true)),
-          ),
+          deviceProfileProvider.overrideWithValue(AsyncValue.data(profile)),
           playerSettingsProvider.overrideWithBuild(
             (_, _) => const PlayerSettings(),
           ),
           historyRepositoryProvider.overrideWithValue(_NoHistory()),
+          syncedProgressProvider.overrideWith((ref) async => []),
         ],
         child: MaterialApp(
           localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -200,6 +238,108 @@ void main() {
       expect(tester.state(find.byType(VlcPlayer)), same(player));
       expect(find.byType(VlcPlayerControls), findsOneWidget);
 
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  for (final isTablet in [false, true]) {
+    testWidgets(
+      'iOS ${isTablet ? 'tablet' : 'phone'} offers manual PiP',
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      (tester) async {
+        await pumpPlayingScreen(
+          tester,
+          profile: DeviceProfile(isTablet: isTablet),
+        );
+        final controls = tester.widget<VlcPlayerControls>(
+          find.byType(VlcPlayerControls),
+        );
+        expect(controls.onEnterPip, isNotNull);
+        final pipCalls = <MethodCall>[];
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          _iosPip,
+          (call) async {
+            pipCalls.add(call);
+            return false;
+          },
+        );
+        final pipButton = find.byIcon(Icons.picture_in_picture_alt_rounded);
+        expect(pipButton, findsOneWidget);
+        await tester.tap(pipButton);
+        // The control strip's double-tap recognizer holds the gesture arena.
+        await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 50));
+        expect(pipCalls, hasLength(1));
+        expect(pipCalls.single.method, 'enterPip');
+        expect(
+          find.byType(VlcPlayerControls),
+          findsOneWidget,
+          reason: 'a rejected entry restores the controls',
+        );
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
+
+  testWidgets(
+    'iOS selects the inline sample-buffer view',
+    variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    (tester) async {
+      await pumpPlayingScreen(tester, profile: const DeviceProfile());
+      final widget = tester.widget<VlcPlayer>(find.byType(VlcPlayer));
+      expect(widget.darwinRenderer, VlcDarwinRenderer.sampleBuffer);
+      expect(find.byType(UiKitView), findsOneWidget);
+      expect(
+        widget.controller.backgroundPolicy,
+        VlcBackgroundPolicy.keepPlaying,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'iOS PiP survives foregrounding without replacing or pausing the engine',
+    variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    (tester) async {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await pumpPlayingScreen(tester, profile: const DeviceProfile());
+      final player = tester.state(find.byType(VlcPlayer));
+      final controller = tester
+          .widget<VlcPlayer>(find.byType(VlcPlayer))
+          .controller;
+      final source = controller.currentMediaSource;
+      engineCalls.clear();
+      await setPipMode(tester, true, channel: _iosPip);
+      expect(find.byType(VlcPlayerControls), findsNothing);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(
+        find.byType(VlcPlayerControls),
+        findsNothing,
+        reason: 'only the native PiP delegate can confirm it stopped',
+      );
+      await setPipMode(tester, false, channel: _iosPip);
+      expect(find.byType(VlcPlayerControls), findsOneWidget);
+      expect(tester.state(find.byType(VlcPlayer)), same(player));
+      expect(controller.currentMediaSource, same(source));
+      expect(controller.isAttached, isTrue);
+      expect(createdViews, hasLength(1));
+      expect(
+        engineCalls.map((call) => call.method),
+        isNot(
+          anyOf(
+            contains('pause'),
+            contains('play'),
+            contains('create'),
+            contains('dispose'),
+            contains('setMedia'),
+          ),
+        ),
+      );
       await tester.pumpWidget(const SizedBox());
     },
   );

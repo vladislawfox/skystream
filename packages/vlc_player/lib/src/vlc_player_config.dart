@@ -90,6 +90,16 @@ enum VlcDarwinRenderer {
   /// The video sits inside the Flutter layer tree, so controls painted over it
   /// are ordinary Flutter painting. One renderer serves macOS and iOS.
   texture,
+
+  /// An iOS `UiKitView` backed by an AVSampleBufferDisplayLayer.
+  ///
+  /// On iOS 15+, shares VLC's decoded frames with native Picture in Picture without
+  /// replacing the engine. The host should use [VlcBackgroundPolicy.keepPlaying]
+  /// so the native PiP lifecycle can decide when background playback pauses.
+  /// On older iOS versions this falls back to [platformView] without native
+  /// background policy; hosts supporting them must retain their pause policy.
+  /// On macOS this falls back to [texture].
+  sampleBuffer,
 }
 
 /// How the video surface reaches the screen on Android.

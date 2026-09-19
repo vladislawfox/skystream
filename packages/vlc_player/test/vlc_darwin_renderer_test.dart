@@ -70,14 +70,8 @@ void main() {
       // Flipped 2026-09-06 after the platform view was shown to drop the
       // video for a frame on every control interaction. See the constant's
       // doc for the measurement.
-      expect(
-        const VlcPlayerConfig().darwinRenderer,
-        VlcDarwinRenderer.texture,
-      );
-      expect(
-        VlcPlayerConfig.defaultDarwinRenderer,
-        VlcDarwinRenderer.texture,
-      );
+      expect(const VlcPlayerConfig().darwinRenderer, VlcDarwinRenderer.texture);
+      expect(VlcPlayerConfig.defaultDarwinRenderer, VlcDarwinRenderer.texture);
     });
 
     test('is not a libVLC option', () {
@@ -135,6 +129,30 @@ void main() {
       });
     });
 
+    testWidgets('sampleBuffer falls back to the texture on macOS', (
+      tester,
+    ) async {
+      await runAsPlatform(TargetPlatform.macOS, () async {
+        mockPlugin();
+        final platformViews = _PlatformViewsRecorder(onCreate: mockEventChannel)
+          ..install();
+        final controller = VlcPlayerController();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: VlcPlayer(
+              controller: controller,
+              darwinRenderer: VlcDarwinRenderer.sampleBuffer,
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(find.byType(Texture), findsOneWidget);
+        expect(platformViews.createdViews, isEmpty);
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+      });
+    });
+
     testWidgets('renders a texture when the renderer says so', (tester) async {
       await runAsPlatform(TargetPlatform.macOS, () async {
         final calls = mockPlugin(viewId: -1, textureId: 88);
@@ -173,7 +191,6 @@ void main() {
         controller.dispose();
       });
     });
-
   });
 
   group('VlcPlayer on iOS', () {
@@ -206,6 +223,41 @@ void main() {
       });
     });
 
+    testWidgets('sampleBuffer opts into native PiP without another engine', (
+      tester,
+    ) async {
+      await runAsPlatform(TargetPlatform.iOS, () async {
+        final calls = mockPlugin();
+        final platformViews = _PlatformViewsRecorder(onCreate: mockEventChannel)
+          ..install();
+        final controller = VlcPlayerController(
+          options: const ['--network-caching=300'],
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            home: VlcPlayer(
+              controller: controller,
+              darwinRenderer: VlcDarwinRenderer.sampleBuffer,
+              fit: VlcVideoFit.cover,
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(find.byType(UiKitView), findsOneWidget);
+        expect(find.byType(Texture), findsNothing);
+        expect(platformViews.createdViews, hasLength(1));
+        expect(platformViews.createdViews.single.creationParams, {
+          'options': ['--network-caching=300'],
+          'fit': 'cover',
+          'pictureInPicture': true,
+        });
+        expect(calls.map((call) => call.method), isNot(contains('create')));
+        expect(controller.isAttached, isTrue);
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+      });
+    });
+
     testWidgets('opts back into the platform view', (tester) async {
       // The platform view has to stay one flag away: the texture has not run
       // on an iOS device yet, and this is the escape hatch if it misbehaves.
@@ -228,6 +280,10 @@ void main() {
         expect(find.byType(UiKitView), findsOneWidget);
         expect(find.byType(Texture), findsNothing);
         expect(platformViews.createdViews, hasLength(1));
+        expect(platformViews.createdViews.single.creationParams, {
+          'options': <String>[],
+          'fit': 'contain',
+        });
         expect(calls.map((call) => call.method), isNot(contains('create')));
 
         await tester.pumpWidget(const SizedBox.shrink());
@@ -256,6 +312,11 @@ class _PlatformViewsRecorder {
             _CreatedPlatformView(
               viewId: viewId,
               viewType: arguments['viewType']! as String,
+              creationParams:
+                  const StandardMessageCodec().decodeMessage(
+                        ByteData.sublistView(arguments['params'] as Uint8List),
+                      )
+                      as Map<Object?, Object?>,
             ),
           );
           onCreate(viewId);
@@ -265,8 +326,13 @@ class _PlatformViewsRecorder {
 }
 
 class _CreatedPlatformView {
-  const _CreatedPlatformView({required this.viewId, required this.viewType});
+  const _CreatedPlatformView({
+    required this.viewId,
+    required this.viewType,
+    required this.creationParams,
+  });
 
   final int viewId;
   final String viewType;
+  final Map<Object?, Object?> creationParams;
 }

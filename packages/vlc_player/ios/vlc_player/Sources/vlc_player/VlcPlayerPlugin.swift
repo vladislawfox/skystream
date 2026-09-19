@@ -1,3 +1,4 @@
+import AVFoundation
 import Flutter
 import MobileVLCKit
 import UIKit
@@ -6,6 +7,8 @@ public class VlcPlayerPlugin: NSObject, FlutterPlugin {
   private let messenger: FlutterBinaryMessenger
   private let textures: FlutterTextureRegistry
   private let methodChannel: FlutterMethodChannel
+  private let pipChannel: FlutterMethodChannel
+  private weak var activePipPlayer: VlcPlayerPlatformView?
   private var players: [Int64: VlcPlayerPlatformView] = [:]
 
   /// Texture players get their ids from here, counting down from -1.
@@ -21,6 +24,7 @@ public class VlcPlayerPlugin: NSObject, FlutterPlugin {
     let factory = VlcPlayerViewFactory(messenger: messenger) { [weak instance] viewId, player in
       instance?.players.removeValue(forKey: viewId)?.dispose()
       instance?.players[viewId] = player
+      instance?.configurePictureInPicture(player)
     }
 
     registrar.addMethodCallDelegate(instance, channel: instance.methodChannel)
@@ -31,7 +35,48 @@ public class VlcPlayerPlugin: NSObject, FlutterPlugin {
     messenger = binaryMessenger
     self.textures = textures
     methodChannel = FlutterMethodChannel(name: "vlc_player", binaryMessenger: binaryMessenger)
+    pipChannel = FlutterMethodChannel(name: "vlc_player/pip", binaryMessenger: binaryMessenger)
     super.init()
+    pipChannel.setMethodCallHandler { [weak self] call, result in
+      guard let self else { result(false); return }
+      let handle = {
+        guard #available(iOS 15.0, *), let pip = self.activePipPlayer?.pictureInPicture else {
+          result(call.method == "enterPip" || call.method == "setPipState" ? false : FlutterMethodNotImplemented)
+          return
+        }
+        switch call.method {
+        case "enterPip": pip.start { result($0) }
+        case "setPipState":
+          // Dart's snapshot may be older than the AVKit delegate. Native VLC
+          // state remains authoritative for PiP transport and lifecycle.
+          pip.refreshPlaybackState()
+          result(true)
+        default: result(FlutterMethodNotImplemented)
+        }
+      }
+      if Thread.isMainThread { handle() } else { DispatchQueue.main.async(execute: handle) }
+    }
+  }
+
+  private func configurePictureInPicture(_ player: VlcPlayerPlatformView) {
+    guard #available(iOS 15.0, *), player.pictureInPicture != nil else { return }
+    player.onPlaybackRequested = { [weak self, weak player] in
+      guard let player else { return }
+      self?.selectPictureInPicturePlayer(player)
+    }
+    player.pictureInPicture?.onModeChanged = { [weak self, weak player] active in
+      guard let self, let player, self.activePipPlayer === player else { return }
+      self.pipChannel.invokeMethod("pipModeChanged", arguments: active)
+    }
+    selectPictureInPicturePlayer(player)
+  }
+
+  private func selectPictureInPicturePlayer(_ player: VlcPlayerPlatformView) {
+    guard #available(iOS 15.0, *), activePipPlayer !== player else { return }
+    activePipPlayer?.pictureInPicture?.setSelected(false)
+    activePipPlayer = player
+    player.pictureInPicture?.setSelected(true)
+    pipChannel.invokeMethod("pipModeChanged", arguments: player.pictureInPicture?.isActive ?? false)
   }
 
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -250,6 +295,7 @@ public class VlcPlayerPlugin: NSObject, FlutterPlugin {
         self.textures.unregisterTexture(textureId)
       }
       player?.dispose()
+      if self.activePipPlayer === player { self.activePipPlayer = nil }
       result?(nil)
     }
     if Thread.isMainThread {
@@ -305,6 +351,13 @@ final class VlcPlayerViewFactory: NSObject, FlutterPlatformViewFactory {
   ) -> FlutterPlatformView {
     let options = (args as? [String: Any])?["options"] as? [String] ?? []
     let fit = (args as? [String: Any])?["fit"] as? String ?? "contain"
+    if #available(iOS 15.0, *), (args as? [String: Any])?["pictureInPicture"] as? Bool == true {
+      let container = VlcSampleBufferView(frame: frame)
+      let player = VlcPlayerPlatformView(viewId: viewId, messenger: messenger,
+        options: options, target: .sampleBuffer(container, fit: fit))
+      onCreate(viewId, player)
+      return container
+    }
     // The factory owns the view it has to hand back, so the player never has
     // to expose an optional one for the texture case to leave nil.
     let container = VlcPlayerContainerView(frame: frame)
@@ -332,14 +385,21 @@ final class VlcPlayerViewFactory: NSObject, FlutterPlatformViewFactory {
 enum VlcRenderTarget {
   case uiKitView(VlcPlayerContainerView, fit: String)
   case texture
+  @available(iOS 15.0, *)
+  case sampleBuffer(VlcSampleBufferView, fit: String)
 }
 
-final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
+final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate, VlcPipPlayback {
   /// The registered Flutter texture id, set by the plugin after it registers
   /// `textureRenderer`. Nil for view-backed players.
   var textureId: Int64?
 
   private let renderTarget: VlcRenderTarget
+  private let frameDelivery = VlcFrameDeliveryGate()
+  private var pictureInPictureObject: AnyObject?
+  var onPlaybackRequested: (() -> Void)?
+  @available(iOS 15.0, *)
+  var pictureInPicture: VlcPictureInPicture? { pictureInPictureObject as? VlcPictureInPicture }
   private(set) var textureRenderer: VlcTextureRenderer?
   private let mediaPlayer: VLCMediaPlayer
   private let eventChannel: FlutterEventChannel
@@ -378,6 +438,11 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
       container.backgroundColor = .black
       Self.applyFit(fit, to: container)
       mediaPlayer.drawable = container
+    case let .sampleBuffer(container, fit):
+      if #available(iOS 15.0, *) {
+        container.setFit(fit)
+        textureRenderer = VlcTextureRenderer(mediaPlayer: mediaPlayer)
+      }
     case .texture:
       // Installed before any media is set: libVLC settles its video output
       // when playback starts, and callbacks added after that are ignored.
@@ -386,6 +451,20 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
 
     super.init()
 
+    if #available(iOS 15.0, *), case let .sampleBuffer(container, _) = target {
+      pictureInPictureObject = VlcPictureInPicture(view: container, playback: self)
+      textureRenderer?.onFrameAvailable = { [weak self, gate = frameDelivery] in
+        guard gate.requestDelivery() else { return }
+        DispatchQueue.main.async { [weak self] in
+          guard gate.beginDelivery(), let self, !self.isDisposed,
+                let buffer = self.textureRenderer?.copyPixelBuffer()?.takeRetainedValue() else { return }
+          let geometry = self.visibleVideoGeometry
+          container.enqueue(buffer, position: CMTime(value: Int64(self.pipPosition), timescale: 1000),
+            visibleSize: geometry.visibleSize, playbackRate: self.pipIsPlaying ? self.pipRate : 0,
+            pixelAspectRatio: geometry.pixelAspectRatio)
+        }
+      }
+    }
     mediaPlayer.delegate = self
     eventHandler.onListen = { [weak self] in
       self?.sendSnapshot(force: true)
@@ -424,7 +503,10 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
     mediaPlayer.media = media
     interruption = "none"
     sendSnapshot(force: true, stateOverride: "opening")
-    if autoPlay {
+    onPlaybackRequested?()
+    if #available(iOS 15.0, *), let pictureInPicture {
+      pictureInPicture.sourceChanged(autoPlay: autoPlay)
+    } else if autoPlay {
       acquireAudioSession()
       mediaPlayer.play()
     }
@@ -432,6 +514,12 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
   }
 
   func play() {
+    guard !isDisposed else { return }
+    onPlaybackRequested?()
+    if #available(iOS 15.0, *), let pictureInPicture {
+      pictureInPicture.requestPlayback(true)
+      return
+    }
     acquireAudioSession()
     // Once the viewer has pressed something the interruption no longer
     // explains what the player is doing.
@@ -441,6 +529,11 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
   }
 
   func pause() {
+    guard !isDisposed else { return }
+    if #available(iOS 15.0, *), let pictureInPicture {
+      pictureInPicture.requestPlayback(false)
+      return
+    }
     // The session is kept over a pause on purpose. Handing it back only to
     // take it again makes the next press of play slow and interrupts whatever
     // filled the gap.
@@ -450,6 +543,7 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
   }
 
   func stop() {
+    if #available(iOS 15.0, *) { pictureInPicture?.requestPlayback(false) }
     interruption = "none"
     mediaPlayer.stop()
     relinquishAudioSession()
@@ -457,6 +551,9 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
   }
 
   func seekTo(milliseconds: Int) {
+    if #available(iOS 15.0, *), case let .sampleBuffer(container, _) = renderTarget {
+      container.reset()
+    }
     mediaPlayer.time = VLCTime(number: NSNumber(value: milliseconds))
     sendSnapshot()
   }
@@ -610,6 +707,10 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
       return
     }
     isDisposed = true
+    frameDelivery.dispose()
+    if #available(iOS 15.0, *) { pictureInPicture?.dispose() }
+    pictureInPictureObject = nil
+    onPlaybackRequested = nil
     audioInterruptions.stopObserving()
     eventChannel.setStreamHandler(nil)
     mediaPlayer.delegate = nil
@@ -624,6 +725,28 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
 
   private func handleAudioInterruption(_ event: VlcAudioInterruptionEvent) {
     guard !isDisposed else {
+      return
+    }
+
+    if #available(iOS 15.0, *), let pictureInPicture {
+      // This render target owns its lifecycle and interruption resumes. Report
+      // permanent focus loss to Dart while interrupted, so Dart does not also
+      // schedule its keepPlaying resume when the native reason becomes none.
+      switch event {
+      case .began:
+        interruption = "focusLost"
+        pictureInPicture.interruptionBegan()
+      case .deviceLost:
+        interruption = "becameNoisy"
+        pictureInPicture.requestPlayback(false)
+      case .endedResumable:
+        interruption = "none"
+        pictureInPicture.interruptionEnded(resumable: true)
+      case .endedNotResumable:
+        interruption = "focusLost"
+        pictureInPicture.interruptionEnded(resumable: false)
+      }
+      sendSnapshot()
       return
     }
 
@@ -694,6 +817,10 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
   }
 
   func mediaPlayerStateChanged(_ aNotification: Notification) {
+    guard !isDisposed else { return }
+    if #available(iOS 15.0, *) {
+      pictureInPicture?.playbackStateChanged(ended: mediaPlayer.state == .ended || mediaPlayer.state == .error)
+    }
     if mediaPlayer.state == .ended {
       // Nothing left to play: hold the session no longer, so whatever we
       // interrupted can come back on its own. A playlist advancing takes it
@@ -727,6 +854,7 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
     guard !isDisposed else {
       return
     }
+    if #available(iOS 15.0, *) { pictureInPicture?.refreshPlaybackState() }
     guard eventHandler.isListening else {
       return
     }
@@ -778,6 +906,44 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
     eventHandler.send(event)
   }
 
+  var pipIsPlaying: Bool { !isDisposed && mediaPlayer.isPlaying }
+  var pipHasMedia: Bool { !isDisposed && mediaPlayer.media != nil }
+  var pipPosition: Int { Self.milliseconds(from: mediaPlayer.time) }
+  var pipDuration: Int { Self.milliseconds(from: mediaPlayer.media?.length) }
+  var pipRate: Float { mediaPlayer.rate }
+  var pipIsSeekable: Bool { mediaPlayer.isSeekable }
+
+  func pipApplyPlayback(_ playing: Bool) {
+    guard !isDisposed else { return }
+    if playing {
+      acquireAudioSession()
+      interruption = "none"
+      mediaPlayer.play()
+    } else {
+      mediaPlayer.pause()
+    }
+    sendSnapshot()
+  }
+
+  func pipSeek(to milliseconds: Int) { seekTo(milliseconds: milliseconds) }
+
+  private var visibleVideoGeometry: VlcVideoGeometry {
+    // tracksInformation describes visible pixels even though callback output
+    // has no drawable and videoSize can be zero. Avoid the padded coded size.
+    if let tracks = mediaPlayer.media?.tracksInformation as? [[String: Any]],
+       let video = tracks.first(where: { Self.trackType($0[VLCMediaTracksInformationType]) == "video" }),
+       let width = video[VLCMediaTracksInformationVideoWidth] as? NSNumber,
+       let height = video[VLCMediaTracksInformationVideoHeight] as? NSNumber,
+       width.doubleValue > 0, height.doubleValue > 0 {
+      let orientation = (video[VLCMediaTracksInformationVideoOrientation] as? NSNumber)?.intValue ?? 0
+      let sarNumerator = (video[VLCMediaTracksInformationSourceAspectRatio] as? NSNumber)?.doubleValue ?? 1
+      let sarDenominator = (video[VLCMediaTracksInformationSourceAspectRatioDenominator] as? NSNumber)?.doubleValue ?? 1
+      return VlcVideoGeometry(size: CGSize(width: width.doubleValue, height: height.doubleValue),
+        orientation: orientation, sampleAspectRatio: CGSize(width: sarNumerator, height: sarDenominator))
+    }
+    return VlcVideoGeometry(size: mediaPlayer.videoSize)
+  }
+
   private static func milliseconds(from time: VLCTime?) -> Int {
     guard let time else {
       return 0
@@ -816,6 +982,10 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
   }
 
   func setFit(_ fit: String) {
+    if #available(iOS 15.0, *), case let .sampleBuffer(container, _) = renderTarget {
+      container.setFit(fit)
+      return
+    }
     // A texture-backed player is fitted in Dart, by the widget that owns the
     // Texture, so there is nothing to push down here.
     guard case let .uiKitView(container, _) = renderTarget else {

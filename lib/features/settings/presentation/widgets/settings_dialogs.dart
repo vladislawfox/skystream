@@ -1859,19 +1859,20 @@ typedef _ControlToggle = ({
 /// device of this shape.
 ///
 /// Deliberately the same predicate as `_pipAvailable` in
-/// `vlc_player_screen.dart`: only Android gives us an OS-level PiP window, and
+/// `vlc_player_screen.dart`: Android and iOS provide an OS-level PiP window, and
 /// a television has nothing to shrink into. Everywhere else the screen passes
 /// a null `onEnterPip` and the button is never built, so the *setting* for it
 /// cannot change anything.
 bool playerCanShowPip(TargetPlatform platform, PlayerFormFactor form) =>
-    platform == TargetPlatform.android && form != PlayerFormFactor.tv;
+    (platform == TargetPlatform.android || platform == TargetPlatform.iOS) &&
+    form != PlayerFormFactor.tv;
 
 /// Shows a dialog to toggle the visibility of individual player control
 /// buttons. Changes apply live via the player settings notifier.
 ///
 /// Only offers a switch for a button this device can actually draw. One row is
-/// conditional on hardware: picture-in-picture exists only on an Android
-/// handset or tablet. Offering the platforms that have no such window a switch
+/// conditional on hardware: picture-in-picture exists on Android and iOS
+/// handsets and tablets. Offering the platforms that have no such window a switch
 /// that moves a stored boolean and changes nothing on screen is the screen
 /// lying about what it controls.
 ///

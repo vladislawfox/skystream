@@ -120,7 +120,8 @@ class _VlcPlayerState extends State<VlcPlayer> {
   bool get _usesTexturePlayer => switch (defaultTargetPlatform) {
     TargetPlatform.android =>
       widget.androidRenderer == VlcAndroidRenderer.texture,
-    TargetPlatform.macOS ||
+    TargetPlatform.macOS =>
+      widget.darwinRenderer != VlcDarwinRenderer.platformView,
     TargetPlatform.iOS => widget.darwinRenderer == VlcDarwinRenderer.texture,
     TargetPlatform.windows || TargetPlatform.linux => true,
     TargetPlatform.fuchsia => false,
@@ -191,6 +192,8 @@ class _VlcPlayerState extends State<VlcPlayer> {
             creationParams: <String, Object?>{
               'options': widget.controller.options,
               'fit': widget.fit.name,
+              if (widget.darwinRenderer == VlcDarwinRenderer.sampleBuffer)
+                'pictureInPicture': true,
             },
             creationParamsCodec: const StandardMessageCodec(),
             onPlatformViewCreated: _handlePlatformViewCreated,

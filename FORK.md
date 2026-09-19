@@ -30,6 +30,12 @@ independently from personal signing:
    page. The Play button accepts a resolved movie, and playback resolves its
    page URL when no explicit playback entry exists. Provider-supplied entries
    and series episode selection retain their existing behavior.
+5. iOS uses VLC's existing decoded frames for Apple's Picture in Picture.
+   Going to the Home Screen can continue playback in the system window, and
+   the player also offers a PiP button. Native code owns background transitions,
+   playback controls and interruption handling without reopening the stream.
+   Background audio is enabled for PiP. If PiP cannot start, playback pauses
+   until the app returns; a user pause or window close stays paused.
 
 Ukrainian providers are distributed separately in
 [skystream-ukrainian](https://github.com/vladislawfox/skystream-ukrainian).
@@ -78,6 +84,8 @@ Builds use Xcode's normal development signing. Upstream ignores `ios/Podfile.loc
 retain the lockfile locally and use `pod install`, not `pod update`, for repeat
 builds of the same revision. No private API credentials are required for a base
 build; features requiring service credentials need their own configuration.
+Run `pod install` from the `ios` directory: Flutter's pod helper uses that
+working directory to distinguish Swift Package Manager plugins from CocoaPods.
 
 The Apple transport tests use an actual local HTTP server and native URLSession.
 The standalone macOS Flutter test runner needs the Cupertino plugin's native
@@ -118,3 +126,50 @@ test/features/details`), including navigation through the real controller and
 playback launcher for movies with null/empty episode lists, an explicit movie
 entry, and a selected series episode. Tests also retain disabled Play while
 details are unavailable or a series has no episodes. Targeted analysis is clean.
+
+## iOS Picture in Picture
+
+Start a movie or episode, then return to the Home Screen. Automatic entry uses
+iOS's **Settings > General > Picture in Picture > Start PiP Automatically**
+preference. The player's PiP button can also start the system window; its
+visibility is configurable in the player control settings.
+
+The app selects `VlcDarwinRenderer.sampleBuffer` on iOS. Its visible
+`AVSampleBufferDisplayLayer` is also the AVKit content source, using the same
+VLC decoder, stream, audio/subtitle selection and position. Native code controls
+background continuation while Dart retains the original player route. The
+existing renderers remain available in the bundled package, and other platforms
+retain their defaults. The app's minimum iOS version remains 15.6.
+
+Focused checks for this path:
+
+```sh
+flutter test test/features/player/player_platform_service_test.dart \
+  test/features/player/pip_engine_continuity_test.dart \
+  test/features/settings/settings_dialogs_test.dart
+(cd packages/vlc_player && flutter test test/vlc_darwin_renderer_test.dart \
+  test/vlc_android_renderer_test.dart test/vlc_player_controller_test.dart \
+  test/vlc_background_policy_test.dart test/vlc_audio_interruption_test.dart)
+swiftc -parse-as-library -module-cache-path /tmp/vlc-pip-module-cache \
+  packages/vlc_player/ios/vlc_player/Sources/vlc_player/VlcPictureInPicturePolicy.swift \
+  packages/vlc_player/ios/Tests/VlcPictureInPicturePolicyTests.swift \
+  -o /tmp/vlc-pip-policy-tests
+/tmp/vlc-pip-policy-tests
+```
+
+On 2026-09-19, these passed: 71 app tests, 121 package tests, and 54 native
+policy/frame/geometry checks. Targeted Dart analysis passed. `RunnerTests` also
+contains device tests for the visible sample-buffer layer, timebase, clean
+aperture, background mode, rejected entry, and real VLC decoding with AVKit
+PiP entry/exit. The final device test bundle compiled successfully, but its tests
+have not run: the paired phone was locked, then became unavailable. Run the
+Runner test scheme on a paired, unlocked iPhone.
+
+The signed profile build `2.7.6+3` succeeded and passed strict code-signature
+verification. Installation is pending because the phone remained unavailable;
+the previously installed app has not been replaced by this build.
+
+Automatic Home Screen entry, close versus restore gestures, audio/subtitle sync,
+calls/headphone interruptions and sustained playback still require hands-on
+verification on the phone; unit tests and compilation alone do not establish
+those behaviors.

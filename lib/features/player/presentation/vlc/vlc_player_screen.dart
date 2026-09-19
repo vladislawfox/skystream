@@ -160,6 +160,10 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     with WidgetsBindingObserver, WindowListener {
   /// The screen owns the controller, and its lifetime is exactly this State's.
   late final VlcPlayerController _controller;
+  late final VlcDarwinRenderer _darwinRenderer =
+      defaultTargetPlatform == TargetPlatform.iOS
+      ? VlcDarwinRenderer.sampleBuffer
+      : playerDarwinRenderer;
 
   /// Whether the bars are up. Owned here rather than by the controls: Back
   /// puts them away before it ever pops (see [_hideChromeForBack]), and they
@@ -668,6 +672,11 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       // listener. Four updates a second is plenty for a seek bar.
       eventThrottleInterval: const Duration(milliseconds: 250),
       config: VlcPlayerConfig(
+        // AVKit may start PiP after Flutter reports a background transition.
+        // The native sample-buffer host owns fallback pause and policy resume.
+        backgroundPolicy: _darwinRenderer == VlcDarwinRenderer.sampleBuffer
+            ? VlcBackgroundPolicy.keepPlaying
+            : null,
         network: VlcNetworkConfig(
           // --network-caching is output latency, not read-ahead: every
           // elementary stream has to accumulate this much before it emits
@@ -1951,9 +1960,11 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     });
   }
 
-  /// Picture-in-picture is an Android activity mode; there is no equivalent on
-  /// the other platforms this ships to, and it is meaningless on a television.
-  bool get _pipAvailable => Platform.isAndroid && _form != PlayerFormFactor.tv;
+  /// Android and iOS have a system PiP window; televisions have no use for it.
+  bool get _pipAvailable =>
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS) &&
+      _form != PlayerFormFactor.tv;
 
   /// Only a desktop window can change size; mobile and TV are already full
   /// screen, so the affordance is absent rather than inert.
@@ -2721,8 +2732,8 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   /// What the screen has to do about the app coming and going.
   ///
   /// Pausing and resuming playback is deliberately not here: that policy lives
-  /// on [VlcPlayerController] (see `VlcPlayerConfig.backgroundPolicy`). What is
-  /// left is the last chance to write progress, and the watchdog's clock.
+  /// on [VlcPlayerController], or the native sample-buffer host on iOS. What
+  /// remains is the last chance to write progress, and the watchdog's clock.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_disposed || !mounted) return;
@@ -2739,10 +2750,12 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       // However long the app was away is not time this source spent stalled,
       // and the engine needs a moment to get its position moving again.
       _resetStallClock();
-      // A backstop behind `pipModeChanged`: returning to the foreground is
-      // what ending PiP looks like, and the chrome must come back with it
-      // whether or not the activity got round to telling us.
-      if (_inPip) setState(() => _inPip = false);
+      // Android's foreground transition is a backstop for a missed PiP exit.
+      // iOS can foreground the app while PiP remains active. Only its native
+      // delegate can confirm the window stopped.
+      if (_inPip && defaultTargetPlatform != TargetPlatform.iOS) {
+        setState(() => _inPip = false);
+      }
     }
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
@@ -3178,7 +3191,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
                 child: VlcPlayer(
                   controller: _controller,
                   fit: _fit,
-                  darwinRenderer: playerDarwinRenderer,
+                  darwinRenderer: _darwinRenderer,
                   androidRenderer: playerAndroidRenderer,
                   backgroundColor: playerBackdropColor,
                 ),

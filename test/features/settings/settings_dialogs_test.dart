@@ -122,7 +122,7 @@ void main() {
       /// (case name, platform, profile, rows that must be offered).
       final cases = <(String, TargetPlatform, DeviceProfile, List<String>)>[
         (
-          'Android phone — the only device that gets the PiP row',
+          'Android phone',
           TargetPlatform.android,
           const DeviceProfile(),
           [pip, resize, speed, episodes],
@@ -140,16 +140,16 @@ void main() {
           [resize, speed, episodes],
         ),
         (
-          'iPhone — no OS-level PiP for us',
+          'iPhone',
           TargetPlatform.iOS,
           const DeviceProfile(),
-          [resize, speed, episodes],
+          [pip, resize, speed, episodes],
         ),
         (
           'iPad',
           TargetPlatform.iOS,
           const DeviceProfile(isTablet: true),
-          [resize, speed, episodes],
+          [pip, resize, speed, episodes],
         ),
         (
           'macOS',
@@ -212,7 +212,7 @@ void main() {
       });
 
       test('the predicates are the player screen\'s own, spelled out', () {
-        // PiP: Android, anywhere but a television.
+        // PiP: Android and iOS, anywhere but a television.
         expect(
           playerCanShowPip(TargetPlatform.android, PlayerFormFactor.phone),
           isTrue,
@@ -227,7 +227,7 @@ void main() {
         );
         expect(
           playerCanShowPip(TargetPlatform.iOS, PlayerFormFactor.phone),
-          isFalse,
+          isTrue,
         );
         expect(
           playerCanShowPip(TargetPlatform.macOS, PlayerFormFactor.desktop),

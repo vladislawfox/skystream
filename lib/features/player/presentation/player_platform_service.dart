@@ -1,4 +1,4 @@
-/// Platform plumbing the player screen needs but should not own: Android
+/// Platform plumbing the player screen needs but should not own: mobile
 /// picture-in-picture, device orientation, and desktop full screen.
 ///
 /// Every entry point is a no-op where the platform has no equivalent, never a
@@ -123,9 +123,22 @@ enum PipAction { play, pause, seekForward, seekBackward }
 class PlayerPlatformService {
   /// Shared with `MainActivity.CHANNEL`. Traffic runs both ways over it:
   /// `enterPip`/`setPipState` out, transport actions and `pipModeChanged` back.
-  static const MethodChannel _pipChannel = MethodChannel(
+  static const MethodChannel _androidPipChannel = MethodChannel(
     'dev.akash.skystream.player/pip',
   );
+
+  static const MethodChannel _iosPipChannel = MethodChannel('vlc_player/pip');
+
+  static MethodChannel get _pipChannel =>
+      defaultTargetPlatform == TargetPlatform.iOS
+      ? _iosPipChannel
+      : _androidPipChannel;
+
+  static bool get _supportsPip =>
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+
+  MethodChannel? _listenerChannel;
 
   static const List<DeviceOrientation> _landscape = [
     DeviceOrientation.landscapeLeft,
@@ -170,9 +183,9 @@ class PlayerPlatformService {
   /// something was pinned.
   Orientation? _pinnedOrientation;
 
-  /// Returns whether the window actually shrank. False covers pre-Oreo, a
-  /// device that refuses, and a user who has turned PiP off for this app,
-  /// which Android reports as a plain `false`.
+  /// Returns whether the native PiP window started. iOS completes only after
+  /// AVKit confirms entry. False also covers unsupported devices, a refused
+  /// request, or a user who has disabled PiP.
   ///
   /// [videoSize] shapes the window; without it Android keeps whatever shape it
   /// used last, so a 2.39:1 film is letterboxed inside an already small
@@ -181,7 +194,7 @@ class PlayerPlatformService {
   /// The platform gate reads [defaultTargetPlatform] rather than
   /// `Platform.isAndroid` because only the former can be overridden by a test.
   Future<bool> enterPip(bool isPlaying, {Size? videoSize}) async {
-    if (defaultTargetPlatform != TargetPlatform.android) return false;
+    if (!_supportsPip) return false;
     try {
       final entered = await _pipChannel.invokeMethod<bool>('enterPip', {
         'isPlaying': isPlaying,
@@ -221,7 +234,7 @@ class PlayerPlatformService {
   /// Carries [videoSize] because the next episode can be shaped differently
   /// from the one that opened the window.
   void syncPipState(bool isPlaying, {Size? videoSize}) {
-    if (defaultTargetPlatform != TargetPlatform.android) return;
+    if (!_supportsPip) return;
     unawaited(
       _pipChannel
           .invokeMethod<void>('setPipState', {
@@ -242,8 +255,8 @@ class PlayerPlatformService {
   /// Callback-based and state-free: this class has no idea what "play" should
   /// do. The screen owns the controller and decides.
   ///
-  /// Not gated on Android: a handler on a channel no other platform sends to
-  /// is already inert, and a runtime gate would make the routing untestable.
+  /// iOS mode changes come from VLC; its AVKit transport controls act on VLC
+  /// directly. Android transport commands continue to route through Dart.
   ///
   /// The handler is keyed by channel name, so it is process-wide and a second
   /// call replaces the first. [detachPipListener] must run on teardown, or the
@@ -253,7 +266,10 @@ class PlayerPlatformService {
     required void Function(PipAction action) onAction,
     required void Function(bool inPip) onModeChanged,
   }) {
-    _pipChannel.setMethodCallHandler((call) async {
+    final channel = _listenerChannel = _pipChannel;
+    channel.setMethodCallHandler((call) async {
+      // AVKit owns iOS transport. Never apply a second play/pause/seek in Dart.
+      if (channel == _iosPipChannel && call.method != 'pipModeChanged') return;
       switch (call.method) {
         case 'pipModeChanged':
           // `== true` rather than a cast: the argument crosses the channel as
@@ -275,7 +291,10 @@ class PlayerPlatformService {
     });
   }
 
-  void detachPipListener() => _pipChannel.setMethodCallHandler(null);
+  void detachPipListener() {
+    (_listenerChannel ?? _pipChannel).setMethodCallHandler(null);
+    _listenerChannel = null;
+  }
 
   /// Points the device the way the video is shaped, once the video's shape has
   /// stopped changing.

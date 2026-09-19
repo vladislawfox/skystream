@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -260,6 +262,7 @@ void main() {
       );
       await Future<void>.delayed(Duration.zero);
 
+      expect(sent, hasLength(1));
       expect(sent.single.method, 'setPipState');
       expect(sent.single.arguments, {
         'isPlaying': true,
@@ -267,6 +270,103 @@ void main() {
         'videoHeight': 720,
       });
     });
+  });
+
+  group('iOS PiP', () {
+    const iosChannel = MethodChannel('vlc_player/pip');
+    late List<MethodCall> sent;
+    late PlayerPlatformService service;
+
+    setUp(() {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      sent = [];
+      service = PlayerPlatformService();
+      messenger.setMockMethodCallHandler(iosChannel, (call) async {
+        sent.add(call);
+        return call.method == 'enterPip' ? true : null;
+      });
+      messenger.setMockMethodCallHandler(
+        const MethodChannel(_pipChannel),
+        (call) async => fail('iOS sent ${call.method} to the Android channel'),
+      );
+    });
+
+    tearDown(() {
+      service.detachPipListener();
+      debugDefaultTargetPlatformOverride = null;
+      messenger.setMockMethodCallHandler(iosChannel, null);
+      messenger.setMockMethodCallHandler(
+        const MethodChannel(_pipChannel),
+        null,
+      );
+    });
+
+    Future<void> fromIos(String method, [Object? arguments]) =>
+        messenger.handlePlatformMessage(
+          iosChannel.name,
+          iosChannel.codec.encodeMethodCall(MethodCall(method, arguments)),
+          null,
+        );
+
+    test('enterPip uses the VLC channel with playback and size', () async {
+      expect(
+        await service.enterPip(true, videoSize: const Size(1920, 800)),
+        isTrue,
+      );
+      expect(sent.single.method, 'enterPip');
+      expect(sent.single.arguments, {
+        'isPlaying': true,
+        'videoWidth': 1920,
+        'videoHeight': 800,
+      });
+    });
+
+    test('entry waits for the native result and preserves failure', () async {
+      final started = Completer<bool>();
+      messenger.setMockMethodCallHandler(iosChannel, (call) => started.future);
+      bool? entered;
+      final request = service.enterPip(true).then((value) => entered = value);
+      await Future<void>.delayed(Duration.zero);
+      expect(entered, isNull);
+      started.complete(false);
+      await request;
+      expect(entered, isFalse);
+    });
+
+    test('state updates use the VLC channel', () async {
+      service.syncPipState(false, videoSize: const Size(1280, 720));
+      await Future<void>.delayed(Duration.zero);
+      expect(sent, hasLength(1));
+      expect(sent.single.method, 'setPipState');
+      expect(sent.single.arguments, {
+        'isPlaying': false,
+        'videoWidth': 1280,
+        'videoHeight': 720,
+      });
+    });
+
+    test(
+      'receives native mode changes without duplicating native transport',
+      () async {
+        final modes = <bool>[];
+        final actions = <PipAction>[];
+        service.attachPipListener(
+          onAction: actions.add,
+          onModeChanged: modes.add,
+        );
+        await fromIos('pipModeChanged', true);
+        await fromIos('pause');
+        await fromIos('play');
+        await fromIos('seekForward');
+        await fromIos('seekBackward');
+        await fromIos('pipModeChanged', false);
+        expect(modes, [true, false]);
+        expect(actions, isEmpty);
+        service.detachPipListener();
+        await fromIos('pipModeChanged', true);
+        expect(modes, [true, false]);
+      },
+    );
   });
 
   /// One reading of the rendered picture's shape, as the screen feeds it:
