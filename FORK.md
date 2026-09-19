@@ -198,8 +198,10 @@ All 17 standalone CoreVideo checks pass, covering luma/chroma edges, odd sizes,
 visible pixel preservation, repeated delivery, full frames and bounded metadata.
 The device suite includes a padded NV12 frame through the actual enqueue path.
 The signed profile build `2.7.6+5` compiled and passed strict code-signature
-verification. Device execution and visual confirmation of the edge correction
-are pending reconnection of the personal iPhone.
+verification. All nine native tests passed on the personal iPhone 16 Pro on
+2026-09-19, including the NV12 padding regression and actual PiP entry/exit
+with zero backward presentation-clock steps. The profile build was installed
+and launched. Visual confirmation on the user's original stream remains pending.
 
 Automatic Home Screen entry, close versus restore gestures, audio/subtitle sync,
 calls/headphone interruptions and sustained playback still require hands-on
