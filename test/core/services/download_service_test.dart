@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:background_downloader/background_downloader.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +10,8 @@ import 'package:path/path.dart' as p;
 import 'package:skystream/core/domain/entity/multimedia_item.dart';
 import 'package:skystream/core/logger/app_logger.dart';
 import 'package:skystream/core/services/download_service.dart';
+import 'package:skystream/core/services/hls_download_plan.dart';
+import 'package:skystream/core/services/hls_download_manager.dart';
 import 'package:skystream/core/storage/storage_service.dart';
 import 'package:talker_flutter/talker_flutter.dart';
 
@@ -44,6 +47,7 @@ void main() {
   late ProviderContainer container;
   late DownloadService service;
   late List<String> nativeCalls;
+  late Map<String, Task> queued;
   late PermissionStatus reportedStatus;
 
   const MethodChannel downloaderChannel = MethodChannel(
@@ -56,6 +60,7 @@ void main() {
   setUp(() async {
     tempDir = Directory.systemTemp.createTempSync('download_service_test');
     nativeCalls = <String>[];
+    queued = {};
     reportedStatus = PermissionStatus.denied;
 
     final TestDefaultBinaryMessenger messenger =
@@ -76,6 +81,19 @@ void main() {
           // parking on a completer only the native side can resolve.
           return false;
         case 'enqueue':
+          final task = Task.createFromJsonString(
+            (call.arguments as List).first as String,
+          );
+          queued[task.taskId] = task;
+          return true;
+        case 'allTasks':
+          return queued.values
+              .map((task) => jsonEncode(task.toJson()))
+              .toList();
+        case 'cancelTasksWithIds':
+          for (final id in call.arguments as List) {
+            queued.remove(id);
+          }
           return true;
         case 'popResumeData':
         case 'popStatusUpdates':
@@ -128,10 +146,13 @@ void main() {
       // step 4, so seeing both ends arrive with nothing in between is what
       // makes the absence meaningful - init really did run past the old site
       // rather than bailing out early.
-      expect(nativeCalls, containsAllInOrder(<String>[
-        'configHoldingQueue',
-        'popProgressUpdates',
-      ]));
+      expect(
+        nativeCalls,
+        containsAllInOrder(<String>[
+          'configHoldingQueue',
+          'popProgressUpdates',
+        ]),
+      );
       expect(
         nativeCalls,
         isNot(contains('permissionStatus')),
@@ -243,6 +264,51 @@ void main() {
       expect(_text(talker), isNot(contains('startDownload failed')));
     });
   });
+  test(
+    'system Cancel resolves a synthetic HLS parent and cancels every media task',
+    () async {
+      await service.init();
+      const tracking = 'https://series.test/arrow#s1e2';
+      await service.startDownload(
+        url: 'https://cdn.test/episode.m3u8',
+        filename: 'episode.m3u8',
+        directory: tempDir.path,
+        item: MultimediaItem(title: 'Arrow', url: tracking, posterUrl: ''),
+        trackingUrl: tracking,
+        hlsPlan: HlsDownloadPlan(
+          {'index.m3u8': '#EXTM3U\n#EXTINF:6,\nasset0.ts\n#EXT-X-ENDLIST\n'},
+          [
+            HlsDownloadAsset(
+              'https://cdn.test/first.ts',
+              'asset0.ts',
+              {},
+              null,
+            ),
+          ],
+        ),
+      );
+      final parent = (await FileDownloader().database.allRecords(
+        group: HlsDownloadManager.parentGroup,
+      )).single.task;
+      expect(queued.values.single.group, HlsDownloadManager.assetGroup);
+      await service.cancelFromSystemUI(parent.taskId);
+      expect(queued, isEmpty);
+      expect(
+        await FileDownloader().database.recordForId(parent.taskId),
+        isNull,
+      );
+      expect(
+        container.read(activeDownloadsProvider),
+        isNot(contains(tracking)),
+      );
+      expect(
+        Directory(
+          HlsDownloadManager.packagePath(p.join(tempDir.path, 'episode.m3u8')),
+        ).existsSync(),
+        isFalse,
+      );
+    },
+  );
 }
 
 String _text(Talker logger) =>

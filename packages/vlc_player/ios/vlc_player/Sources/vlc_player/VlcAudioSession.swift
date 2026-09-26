@@ -1,5 +1,49 @@
 import AVFoundation
 import Foundation
+import UIKit
+
+/// Opt-in local diagnostics for an attached development device. No media URLs,
+/// titles, device names or audio samples are recorded.
+enum VlcAudioDiagnostics {
+  private static let enabled = ProcessInfo.processInfo.environment["SKYSTREAM_AUDIO_DIAGNOSTICS"] == "1"
+  private static var lastSnapshot: NSDictionary?
+
+  static func record(_ event: String, volume: Int? = nil, playing: Bool? = nil,
+                     pipActive: Bool? = nil) {
+    guard enabled else { return }
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { record(event, volume: volume, playing: playing, pipActive: pipActive) }
+      return
+    }
+    let session = AVAudioSession.sharedInstance()
+    var values: [String: Any] = [
+      "event": event,
+      "category": session.category.rawValue,
+      "mode": session.mode.rawValue,
+      "options": session.categoryOptions.rawValue,
+      "routePolicy": session.routeSharingPolicy.rawValue,
+      "systemVolume": session.outputVolume,
+      "sampleRate": session.sampleRate,
+      "channels": session.outputNumberOfChannels,
+      "outputs": session.currentRoute.outputs.map { $0.portType.rawValue },
+      "otherAudio": session.isOtherAudioPlaying,
+      "secondaryAudioSilenced": session.secondaryAudioShouldBeSilencedHint,
+      "appState": UIApplication.shared.applicationState.rawValue,
+    ]
+    if let volume { values["vlcVolume"] = volume }
+    if let playing { values["playing"] = playing }
+    if let pipActive { values["pip"] = pipActive }
+    if event == "snapshot" {
+      let snapshot = values as NSDictionary
+      guard lastSnapshot?.isEqual(snapshot) != true else { return }
+      lastSnapshot = snapshot
+    }
+    values["uptime"] = ProcessInfo.processInfo.systemUptime
+    guard let data = try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys]),
+          let text = String(data: data, encoding: .utf8) else { return }
+    print("[VLC audio] \(text)")
+  }
+}
 
 /// What the system did to our audio, in terms a player can act on.
 enum VlcAudioInterruptionEvent {
@@ -107,6 +151,7 @@ final class VlcAudioInterruptionObserver: NSObject {
   }
 
   @objc private func handleInterruption(_ notification: Notification) {
+    VlcAudioDiagnostics.record("interruption:\(notification.userInfo?[AVAudioSessionInterruptionTypeKey] ?? "unknown")")
     guard
       let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
       let type = AVAudioSession.InterruptionType(rawValue: rawType)
@@ -128,6 +173,7 @@ final class VlcAudioInterruptionObserver: NSObject {
   }
 
   @objc private func handleRouteChange(_ notification: Notification) {
+    VlcAudioDiagnostics.record("routeChange:\(notification.userInfo?[AVAudioSessionRouteChangeReasonKey] ?? "unknown")")
     guard
       let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
       let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason),

@@ -4,6 +4,22 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vlc_player/vlc_player.dart';
 
 void main() {
+  test('unavailable native volume preserves the last audible level', () {
+    for (final previousVolume in [0, 60, 100, 200]) {
+      for (final unavailable in [-100, -1]) {
+        final next = VlcPlayerValue.fromEvent({
+          'volume': unavailable,
+        }, VlcPlayerValue(volume: previousVolume));
+        expect(next.volume, previousVolume);
+      }
+    }
+    expect(
+      VlcPlayerValue.fromEvent({'volume': 0}, const VlcPlayerValue()).volume,
+      0,
+      reason: 'a real mute is not an unavailable reading',
+    );
+  });
+
   group('VlcPlayerValue', () {
     test('defaults remain backward compatible', () {
       const value = VlcPlayerValue();

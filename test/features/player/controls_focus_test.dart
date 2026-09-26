@@ -1789,6 +1789,42 @@ void main() {
   });
 
   group('VlcPlayerControls volume', () {
+    for (final start in [
+      const Offset(740, 2),
+      const Offset(740, 388),
+      const Offset(842, 180),
+    ]) {
+      testWidgets(
+        'iOS system edge swipe at $start leaves volume unchanged',
+        variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+        (tester) async {
+          final engine = FakeVlcEngine();
+          await _pumpControls(
+            tester,
+            isTv: false,
+            size: _phone,
+            engine: engine,
+          );
+          // Hide the chrome so this reaches the video gesture detector.
+          await tester.pump(_hideAfter);
+          await tester.pump();
+          final gesture = await tester.startGesture(start);
+          await gesture.moveBy(Offset(0, start.dy > 200 ? -80 : 80));
+          await tester.pump();
+          await gesture.moveBy(Offset(0, start.dy > 200 ? -80 : 80));
+          await tester.pump();
+          await gesture.cancel();
+          expect(
+            _volumes(engine),
+            isEmpty,
+            reason: 'Home and Control Center swipes must not adjust VLC gain',
+          );
+          await tester.pump(const Duration(seconds: 1));
+          await _snapshot(tester, state: 'paused');
+        },
+      );
+    }
+
     // On Android the AudioVolumeUp/Down logical key *is* the hardware rocker,
     // and the embedder gives the framework first refusal:
     // FlutterView.dispatchKeyEvent returns true the moment

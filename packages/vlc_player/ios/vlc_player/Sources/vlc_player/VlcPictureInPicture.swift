@@ -175,6 +175,7 @@ final class VlcPictureInPicture: NSObject, AVPictureInPictureControllerDelegate,
   }
 
   func requestPlayback(_ playing: Bool) {
+    VlcAudioDiagnostics.record("requestPlayback:\(playing)")
     guard !disposed else { return }
     apply(policy.requestPlayback(playing))
     refreshPlaybackState()
@@ -188,12 +189,14 @@ final class VlcPictureInPicture: NSObject, AVPictureInPictureControllerDelegate,
   }
 
   func interruptionBegan() {
+    VlcAudioDiagnostics.record("interruptionBegan")
     policy.interruptionBegan()
     apply(.pause)
     refreshPlaybackState()
   }
 
   func interruptionEnded(resumable: Bool) {
+    VlcAudioDiagnostics.record("interruptionEnded:\(resumable)")
     apply(policy.interruptionEnded(resumable: resumable))
     refreshPlaybackState()
   }
@@ -265,6 +268,7 @@ final class VlcPictureInPicture: NSObject, AVPictureInPictureControllerDelegate,
   }
 
   @objc private func didEnterBackground() {
+    VlcAudioDiagnostics.record("didEnterBackground")
     guard !disposed else { return }
     let canAttempt = selected && view.window != nil && controller?.isPictureInPicturePossible == true
     let action = policy.enterBackground(canAttemptPictureInPicture: canAttempt)
@@ -299,6 +303,7 @@ final class VlcPictureInPicture: NSObject, AVPictureInPictureControllerDelegate,
   }
 
   @objc private func willEnterForeground() {
+    VlcAudioDiagnostics.record("willEnterForeground")
     guard !disposed else { return }
     finishBackgroundGrace()
     apply(policy.enterForeground())
@@ -339,6 +344,7 @@ final class VlcPictureInPicture: NSObject, AVPictureInPictureControllerDelegate,
   }
 
   func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+    VlcAudioDiagnostics.record("didStartPiP")
     guard !disposed, selected else { pictureInPictureController.stopPictureInPicture(); return }
     apply(policy.pictureInPictureStarted())
     finishBackgroundGrace()
@@ -358,6 +364,7 @@ final class VlcPictureInPicture: NSObject, AVPictureInPictureControllerDelegate,
   }
 
   func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+    VlcAudioDiagnostics.record("didStopPiP:restoring=\(restoringInline)")
     guard !disposed else { return }
     apply(policy.pictureInPictureStopped(restoredInline: restoringInline))
     restoringInline = false
@@ -369,6 +376,7 @@ final class VlcPictureInPicture: NSObject, AVPictureInPictureControllerDelegate,
 
   func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController,
     restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
+    VlcAudioDiagnostics.record("restoreUI")
     // Flutter retains the original route and this platform view during PiP.
     // Its window is still attached when the system requests inline return.
     let canRestore = !disposed && view.window != nil
@@ -377,6 +385,7 @@ final class VlcPictureInPicture: NSObject, AVPictureInPictureControllerDelegate,
   }
 
   func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool) {
+    VlcAudioDiagnostics.record("AVKitSetPlaying:\(playing)")
     requestPlayback(playing)
   }
 

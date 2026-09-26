@@ -169,7 +169,8 @@ class RunnerTests: XCTestCase {
     guard AVPictureInPictureController.isPictureInPictureSupported() else {
       throw XCTSkip("PiP unavailable on this device")
     }
-    let movie = try XCTUnwrap(Bundle(for: RunnerTests.self).url(forResource: "video", withExtension: "mp4"))
+    let movie = try XCTUnwrap(Bundle(for: RunnerTests.self).url(
+      forResource: "S1-E13 13", withExtension: "m3u8", subdirectory: "offline-hls"))
     let view = VlcSampleBufferView(frame: UIScreen.main.bounds)
     let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
     let previousWindow = scene.windows.first(where: \.isKeyWindow)
@@ -178,8 +179,10 @@ class RunnerTests: XCTestCase {
     host.view = view
     window.rootViewController = host
     window.makeKeyAndVisible()
-    let player = VlcPlayerPlatformView(viewId: 9001, messenger: TestMessenger(), options: [],
+    let messenger = TestMessenger()
+    let player = VlcPlayerPlatformView(viewId: 9001, messenger: messenger, options: [],
                                       target: .sampleBuffer(view, fit: "contain"))
+    messenger.listen(viewId: 9001)
     defer {
       player.dispose()
       window.isHidden = true
@@ -218,6 +221,18 @@ class RunnerTests: XCTestCase {
     }
     print("PiP presentation clock: backwards=\(backwardsSteps), minimumStep=\(minimumStep)")
     XCTAssertEqual(backwardsSteps, 0, "Forward playback must not rewind the presentation clock")
+    XCTAssertFalse(player.getAudioTracks().isEmpty, "Fixture must exercise VLC's real audio output")
+    let session = AVAudioSession.sharedInstance()
+    func audioState(_ stage: String) -> AudioState {
+      let state = AudioState(session: session, volume: messenger.lastEvent?["volume"] as? Int)
+      print("PiP audio \(stage): \(state)")
+      return state
+    }
+    _ = audioState("initial")
+    player.setVolume(60)
+    try await Task.sleep(nanoseconds: 100_000_000)
+    let inlineAudio = audioState("inline at requested 60")
+    XCTAssertEqual(inlineAudio.vlcVolume, 60, "VLC must report the requested volume")
     let possibleDeadline = Date().addingTimeInterval(5)
     while !controller.isPictureInPicturePossible && Date() < possibleDeadline {
       try await Task.sleep(nanoseconds: 20_000_000)
@@ -232,12 +247,20 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(controller.isPictureInPictureActive)
     XCTAssertTrue(player.pipIsPlaying)
     XCTAssertTrue(controller.contentSource?.sampleBufferDisplayLayer === view.displayLayer)
+    try await Task.sleep(nanoseconds: 500_000_000)
+    XCTAssertEqual(audioState("PiP"), inlineAudio, "PiP entry must preserve audio configuration and volume")
+    // Exercise AVKit's restore path while retaining the same visible player.
+    pip.pictureInPictureController(controller,
+      restoreUserInterfaceForPictureInPictureStopWithCompletionHandler: { XCTAssertTrue($0) })
     let stopped = expectation(description: "AVKit reports PiP exit")
     pip.onModeChanged = { active in if !active { stopped.fulfill() } }
     controller.stopPictureInPicture()
     await fulfillment(of: [stopped], timeout: 5)
     XCTAssertFalse(controller.isPictureInPictureActive)
     XCTAssertTrue(view.window === window)
+    try await Task.sleep(nanoseconds: 500_000_000)
+    XCTAssertTrue(player.pipIsPlaying)
+    XCTAssertEqual(audioState("restored"), inlineAudio, "Inline restoration must preserve audio configuration and volume")
   }
 
   private func makeFrame(width: Int, height: Int) throws -> CVPixelBuffer {
@@ -272,11 +295,49 @@ private final class TestPlayback: VlcPipPlayback {
 }
 
 private final class TestMessenger: NSObject, FlutterBinaryMessenger {
-  func send(onChannel channel: String, message: Data?) {}
+  private var handlers: [String: FlutterBinaryMessageHandler] = [:]
+  private(set) var lastEvent: [String: Any]?
+  func listen(viewId: Int64) {
+    let message = FlutterStandardMethodCodec.sharedInstance().encode(
+      FlutterMethodCall(methodName: "listen", arguments: nil))
+    handlers["vlc_player/events/\(viewId)"]?(message, { _ in })
+  }
+  func send(onChannel channel: String, message: Data?) {
+    guard channel.hasPrefix("vlc_player/events/"), let message else { return }
+    lastEvent = FlutterStandardMethodCodec.sharedInstance().decodeEnvelope(message) as? [String: Any]
+  }
   func send(onChannel channel: String, message: Data?, binaryReply callback: FlutterBinaryReply?) {
+    send(onChannel: channel, message: message)
     callback?(nil)
   }
   func setMessageHandlerOnChannel(_ channel: String,
-                                 binaryMessageHandler handler: FlutterBinaryMessageHandler?) -> FlutterBinaryMessengerConnection { 1 }
+                                 binaryMessageHandler handler: FlutterBinaryMessageHandler?) -> FlutterBinaryMessengerConnection {
+    handlers[channel] = handler
+    return 1
+  }
   func cleanUpConnection(_ connection: FlutterBinaryMessengerConnection) {}
+}
+
+private struct AudioState: Equatable {
+  let category: String
+  let mode: String
+  let options: UInt
+  let policy: UInt
+  let outputVolume: Float
+  let vlcVolume: Int?
+  let sampleRate: Double
+  let channels: Int
+  let outputs: [String]
+
+  init(session: AVAudioSession, volume: Int?) {
+    category = session.category.rawValue
+    mode = session.mode.rawValue
+    options = session.categoryOptions.rawValue
+    policy = session.routeSharingPolicy.rawValue
+    outputVolume = session.outputVolume
+    vlcVolume = volume
+    sampleRate = session.sampleRate
+    channels = session.outputNumberOfChannels
+    outputs = session.currentRoute.outputs.map { $0.portType.rawValue }
+  }
 }

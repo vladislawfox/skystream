@@ -204,6 +204,44 @@ with zero backward presentation-clock steps. The profile build was installed
 and launched. The user subsequently accepted build `2.7.6+5` after checking it
 on the iPhone.
 
+### PiP volume and offline episode downloads
+
+The player now keeps its last known volume when libVLC reports an unavailable
+audio-output value (`-100`). Previously that value selected 0% in the volume
+picker after PiP recreated the controls, and became the starting point for
+volume gestures. Touch rails now ignore gestures beginning in system edges,
+including the iOS fullscreen edges used for Home and Control Center. Genuine
+mute and volume boost values are preserved. Optional native audio diagnostics
+can be enabled with `SKYSTREAM_AUDIO_DIAGNOSTICS=1`; they record levels and
+route types, never stream URLs or audio samples.
+
+HLS episode downloads now create a local playlist and an adjacent `.hls`
+directory containing the selected rendition's segments, audio, initialization
+maps and supported encryption keys. Native background tasks fetch these assets
+with the source headers. A persisted parent task handles progress, pause,
+resume and cancellation, while the root playlist appears only after every
+asset completes. Deletion removes both the playlist and its assets. The
+confirmation dialog reports an unknown size instead of mistaking the manifest
+length for the episode's size. Live and unsupported protected sources produce
+an error before downloading.
+
+On 2026-09-27, a synthetic 20-second H.264/AAC episode was served over loopback
+HTTP, downloaded through the package manager, and decoded completely with
+network protocols disabled. The exact resulting package is the native PiP
+fixture. All nine native tests passed on the iPhone 16 Pro: VLC played this
+offline HLS package, retained the chosen 60% gain through real PiP entry and
+inline restoration, and recorded zero backward presentation-clock steps.
+The same checks also passed with a space-containing episode filename and an
+ASCII asset-directory name. A separate AES-128 fixture was downloaded and
+decoded with network protocols disabled. The related regression run passed
+987 app tests and 140 VLC package tests; after final recovery hardening,
+all 34 focused download tests passed. Targeted Dart analysis and independent
+code review found no remaining issues. The signed profile build `2.7.6+7`
+passed strict code-signature verification and was installed and launched on
+the iPhone, which reported version `2.7.6`, build `7`.
+The original provider episode and the user's normal viewing gestures still
+need hands-on confirmation in the installed build.
+
 Automatic Home Screen entry, close versus restore gestures, audio/subtitle sync,
 calls/headphone interruptions and sustained playback still require hands-on
 verification on the phone; unit tests and compilation alone do not establish

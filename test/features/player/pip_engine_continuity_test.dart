@@ -146,14 +146,14 @@ void main() {
   /// The engine reports a position that has moved, which is the only thing the
   /// screen accepts as proof that a frame exists - and therefore the only way
   /// past the opening overlay to the chrome this test is about.
-  Future<void> sendFirstFrame(WidgetTester tester) async {
+  Future<void> sendFirstFrame(WidgetTester tester, {int volume = 100}) async {
     await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
       _events.name,
       _events.codec.encodeSuccessEnvelope(<String, Object?>{
         'state': 'playing',
         'position': 1500,
         'duration': 0,
-        'volume': 100,
+        'volume': volume,
         'playbackSpeed': 1.0,
         'isReady': true,
         'isSeekable': true,
@@ -273,6 +273,46 @@ void main() {
           find.byType(VlcPlayerControls),
           findsOneWidget,
           reason: 'a rejected entry restores the controls',
+        );
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
+
+  for (final volume in [0, 60, 100]) {
+    testWidgets(
+      'iOS PiP restores the volume picker at $volume% after unavailable readings',
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      (tester) async {
+        tester.view.physicalSize = const Size(844, 390);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+        await pumpPlayingScreen(tester, profile: const DeviceProfile());
+        await sendFirstFrame(tester, volume: volume);
+        engineCalls.clear();
+        await setPipMode(tester, true, channel: _iosPip);
+        await sendFirstFrame(tester, volume: -100);
+        await setPipMode(tester, false, channel: _iosPip);
+        await tester.tap(find.byTooltip('Volume'));
+        await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 50));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.scrollUntilVisible(
+          find.text('$volume%'),
+          80,
+          scrollable: find.descendant(
+            of: find.byType(BottomSheet),
+            matching: find.byType(Scrollable),
+          ),
+        );
+        final selected = tester
+            .widgetList<ListTile>(find.byType(ListTile))
+            .where((tile) => tile.selected)
+            .single;
+        expect((selected.title! as Text).data, '$volume%');
+        expect(
+          engineCalls.where((call) => call.method == 'setVolume'),
+          isEmpty,
         );
         await tester.pumpWidget(const SizedBox());
       },

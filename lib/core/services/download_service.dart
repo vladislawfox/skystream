@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
 import 'package:background_downloader/background_downloader.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -19,6 +20,8 @@ import '../storage/storage_service.dart';
 import '../network/dio_client_provider.dart';
 import '../utils/file_size_formatter.dart';
 import 'download_continued_processing_service.dart';
+import 'hls_download_plan.dart';
+import 'hls_download_manager.dart';
 
 part 'download_service.g.dart';
 
@@ -120,14 +123,19 @@ class DownloadService {
   final Dio _dio;
   final Set<String> _cancellingUrls = {};
   late final DownloadContinuedProcessingService _continuedProcessing;
+  late final HlsDownloadManager _hls;
   final _updatesController = StreamController<TaskUpdate>.broadcast();
   StreamSubscription<TaskUpdate>? _updatesSubscription;
   bool _isInitialized = false;
   bool _askedForNotificationPermission = false;
 
   DownloadService(this._ref) : _dio = _ref.read(dioClientProvider) {
+    _hls = HlsDownloadManager(
+      downloader: FileDownloader(),
+      onUpdate: _sharedEvents.add,
+    );
     _continuedProcessing = DownloadContinuedProcessingService(
-      onSystemCancel: _cancelFromSystemUI,
+      onSystemCancel: cancelFromSystemUI,
     );
   }
 
@@ -202,7 +210,8 @@ class DownloadService {
         .registerCallbacks(
           taskNotificationTapCallback: _myNotificationTapCallback,
         )
-        .configureNotification(
+        .configureNotificationForGroup(
+          FileDownloader.defaultGroup,
           running: notificationConfig,
           complete: const TaskNotification(
             '{displayName}',
@@ -228,6 +237,10 @@ class DownloadService {
     //    then let this instance listen to that broadcast proxy.
     _fdSubscription ??= FileDownloader().updates.listen(_sharedEvents.add);
     _updatesSubscription = _sharedEvents.stream.listen((update) {
+      if (update.task.group == HlsDownloadManager.assetGroup) {
+        unawaited(_hls.handle(update));
+        return;
+      }
       _updatesController.add(update);
       final trackingUrl = update.task.metaData.isNotEmpty
           ? update.task.metaData
@@ -354,8 +367,39 @@ class DownloadService {
     });
 
     // 4. Catch up on any running tasks and database tracking
-    await FileDownloader().trackTasks();
-    await FileDownloader().start();
+    await FileDownloader().trackTasks(markDownloadedComplete: false);
+    // Synthetic HLS parents must never be rescheduled as ordinary HTTP files.
+    await _hls.restore(await FileDownloader().database.allRecords());
+    await FileDownloader().start(
+      doTrackTasks: false,
+      doRescheduleKilledTasks: false,
+    );
+    // Let the broadcast bridge dispatch the native status backlog first.
+    await Future<void>.delayed(Duration.zero);
+    await _hls.reconcile();
+    final nativeIds = (await FileDownloader().allTasks(
+      allGroups: true,
+    )).map((task) => task.taskId).toSet();
+    for (final record in await FileDownloader().database.allRecords()) {
+      if (record.group == HlsDownloadManager.parentGroup ||
+          record.group == HlsDownloadManager.assetGroup) {
+        continue;
+      }
+      if ((record.status == TaskStatus.running ||
+              record.status == TaskStatus.enqueued ||
+              record.status == TaskStatus.waitingToRetry) &&
+          !nativeIds.contains(record.taskId)) {
+        final file = File(await record.task.filePath());
+        if (await file.exists()) {
+          await FileDownloader().database.updateRecord(
+            record.copyWith(status: TaskStatus.complete, progress: 1),
+          );
+          _sharedEvents.add(TaskStatusUpdate(record.task, TaskStatus.complete));
+        } else {
+          await FileDownloader().enqueue(record.task);
+        }
+      }
+    }
 
     // 5. Bridge Database Records to Riverpod (Persistence after restart)
     final records = await FileDownloader().database.allRecords();
@@ -425,8 +469,10 @@ class DownloadService {
     }
   }
 
-  Future<void> _cancelFromSystemUI(String taskId) async {
-    final task = await FileDownloader().taskForId(taskId);
+  Future<void> cancelFromSystemUI(String taskId) async {
+    final task =
+        await FileDownloader().taskForId(taskId) ??
+        (await FileDownloader().database.recordForId(taskId))?.task;
     if (task == null) {
       await FileDownloader().cancelTasksWithIds([taskId]);
       return;
@@ -443,7 +489,9 @@ class DownloadService {
   }) async {
     _cancellingUrls.add(trackingUrl);
     try {
-      await FileDownloader().cancelTasksWithIds([taskId]);
+      if (!await _hls.cancel(taskId)) {
+        await FileDownloader().cancelTasksWithIds([taskId]);
+      }
       _ref.read(activeDownloadsProvider.notifier).remove(trackingUrl);
       _ref.read(downloadProgressProvider.notifier).remove(trackingUrl);
       if (notifyContinuedProcessing) {
@@ -466,6 +514,10 @@ class DownloadService {
   }
 
   Future<void> pauseDownload(String taskId) async {
+    if (await _hls.pause(taskId)) {
+      await _continuedProcessing.stop(taskId: taskId);
+      return;
+    }
     final task = await FileDownloader().taskForId(taskId);
     if (task is DownloadTask) {
       await FileDownloader().pause(task);
@@ -474,6 +526,18 @@ class DownloadService {
   }
 
   Future<void> resumeDownload(String taskId) async {
+    if (await _hls.resume(taskId)) {
+      final record = await FileDownloader().database.recordForId(taskId);
+      if (record != null && record.status == TaskStatus.running) {
+        await _continuedProcessing.start(
+          taskId: taskId,
+          displayName: record.task.displayName,
+          progress: record.progress,
+          totalBytes: record.expectedFileSize,
+        );
+      }
+      return;
+    }
     final task = await FileDownloader().taskForId(taskId);
     if (task is DownloadTask) {
       final records = await FileDownloader().database.allRecords();
@@ -528,6 +592,12 @@ class DownloadService {
     Map<String, String>? headers,
   }) async {
     try {
+      if (HlsDownloadPlan.matches(url, null)) {
+        return DownloadMetadata(
+          mimeType: 'application/vnd.apple.mpegurl',
+          hlsPlan: await HlsDownloadPlan.load(_dio, url, headers: headers),
+        );
+      }
       // 1. Try HEAD request first
       int? size;
       String? mimeType;
@@ -549,33 +619,57 @@ class DownloadService {
         // HEAD failed, will try GET fallback
       }
 
-      // 2. Fallback to GET with Range if size unknown
-      if (size == null) {
-        try {
-          final getResponse = await _dio
-              .get<dynamic>(
-                url,
-                options: Options(
-                  headers: {...?headers, 'Range': 'bytes=0-0'},
-                  followRedirects: true,
-                ),
-              )
-              .timeout(const Duration(seconds: 10));
-
-          final rangeContentLength = getResponse.headers.value('content-range');
-          if (rangeContentLength != null) {
-            final totalSize = rangeContentLength.split('/').last;
-            size = int.tryParse(totalSize);
-          }
-          mimeType ??= getResponse.headers.value('content-type');
-        } catch (e) {
-          // GET fallback failed
+      if (HlsDownloadPlan.matches(url, mimeType)) {
+        return DownloadMetadata(
+          mimeType: mimeType,
+          hlsPlan: await HlsDownloadPlan.load(_dio, url, headers: headers),
+        );
+      }
+      // Some providers serve extensionless playlists as text/plain or octet-
+      // stream. Sniff only a small prefix; a server ignoring Range must never
+      // make verification buffer an entire episode in memory.
+      try {
+        final response = await _dio
+            .get<ResponseBody>(
+              url,
+              options: Options(
+                headers: {...?headers, 'Range': 'bytes=0-4095'},
+                responseType: ResponseType.stream,
+                followRedirects: true,
+              ),
+            )
+            .timeout(const Duration(seconds: 10));
+        final range = response.headers.value('content-range');
+        if (range != null) size = int.tryParse(range.split('/').last) ?? size;
+        mimeType = response.headers.value('content-type') ?? mimeType;
+        final prefix = <int>[];
+        await for (final chunk in response.data!.stream) {
+          prefix.addAll(chunk.take(4096 - prefix.length));
+          if (prefix.length >= 64) break;
         }
+        final looksHls = utf8
+            .decode(prefix, allowMalformed: true)
+            .trimLeft()
+            .startsWith('#EXTM3U');
+        if (looksHls || HlsDownloadPlan.matches(url, mimeType)) {
+          return DownloadMetadata(
+            mimeType: 'application/vnd.apple.mpegurl',
+            hlsPlan: await HlsDownloadPlan.load(_dio, url, headers: headers),
+          );
+        }
+      } on DioException {
+        // Keep a successful HEAD result when the origin rejects Range GET.
       }
 
       return DownloadMetadata(size: size, mimeType: mimeType);
-    } catch (e) {
-      return null;
+    } on FormatException catch (error) {
+      return DownloadMetadata(error: error.message);
+    } catch (error, stack) {
+      talker.error('Download source verification failed', error, stack);
+      return DownloadMetadata(
+        error:
+            'This source is currently unavailable. Please try another source.',
+      );
     }
   }
 
@@ -587,6 +681,7 @@ class DownloadService {
     Episode? episode,
     String? trackingUrl,
     Map<String, String>? headers,
+    HlsDownloadPlan? hlsPlan,
   }) async {
     try {
       if (kDebugMode) {
@@ -659,7 +754,7 @@ class DownloadService {
             debugPrint('[DownloadService] Auto-resuming paused task.');
           }
           if (existingRecord.task is DownloadTask) {
-            await FileDownloader().resume(existingRecord.task as DownloadTask);
+            await resumeDownload(existingRecord.task.taskId);
           }
         }
 
@@ -676,7 +771,9 @@ class DownloadService {
       // Path Logic:
       // Android/Desktop: use BaseDirectory.root with absolute path.
       // iOS: use BaseDirectory.applicationDocuments with relative path for sandbox safety.
-      final customDir = _ref.read(storageServiceProvider).getDownloadDirectory();
+      final customDir = _ref
+          .read(storageServiceProvider)
+          .getDownloadDirectory();
       final hasCustomDir = customDir != null && customDir.trim().isNotEmpty;
       BaseDirectory baseDir;
       String taskDirectory;
@@ -696,6 +793,34 @@ class DownloadService {
           // Desktop / custom: directory is already absolute.
           taskDirectory = directory;
         }
+      }
+
+      hlsPlan ??= HlsDownloadPlan.matches(url, null)
+          ? await HlsDownloadPlan.load(_dio, url, headers: headers)
+          : null;
+      if (hlsPlan != null) {
+        filename = '${p.withoutExtension(filename)}.m3u8';
+        final task = DownloadTask(
+          url: url,
+          filename: filename,
+          displayName: filename,
+          baseDirectory: baseDir,
+          directory: taskDirectory,
+          headers: headers ?? {},
+          group: HlsDownloadManager.parentGroup,
+          updates: Updates.statusAndProgress,
+          allowPause: true,
+          metaData: trackingUrl ?? url,
+        );
+        await _ref
+            .read(storageServiceProvider)
+            .saveDownloadMetadata(task.taskId, item, episode: episode);
+        await _continuedProcessing.start(
+          taskId: task.taskId,
+          displayName: filename,
+        );
+        await _hls.start(task, hlsPlan);
+        return true;
       }
 
       final chunks = _ref
@@ -865,7 +990,7 @@ class DownloadService {
     }
 
     // Check common extensions
-    final extensions = ['.mp4', '.mkv', '.webm', '.avi'];
+    final extensions = ['.m3u8', '.mp4', '.mkv', '.webm', '.avi'];
     for (final ext in extensions) {
       final file = File(p.join(directoryPath, '$baseName$ext'));
       if (await file.exists()) {
@@ -900,6 +1025,10 @@ class DownloadService {
       if (await file.exists()) {
         final parentDir = file.parent;
         await file.delete();
+        if (p.extension(file.path) == '.m3u8') {
+          final package = Directory(HlsDownloadManager.packagePath(file.path));
+          if (await package.exists()) await package.delete(recursive: true);
+        }
         // Recursively cleanup empty parent folders
         await _deleteEmptyParentDirectories(parentDir);
         return true;
@@ -966,8 +1095,10 @@ class DownloadService {
 class DownloadMetadata {
   final int? size;
   final String? mimeType;
+  final HlsDownloadPlan? hlsPlan;
+  final String? error;
 
-  DownloadMetadata({this.size, this.mimeType});
+  DownloadMetadata({this.size, this.mimeType, this.hlsPlan, this.error});
 
   String get sizeString {
     if (size == null) return "Unknown size";

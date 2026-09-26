@@ -559,6 +559,7 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate, VlcPipPlayb
   }
 
   func setVolume(_ volume: Int) {
+    VlcAudioDiagnostics.record("setVolume", volume: volume, playing: mediaPlayer.isPlaying)
     mediaPlayer.audio?.volume = Int32(max(0, min(200, volume)))
     sendSnapshot()
   }
@@ -860,6 +861,10 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate, VlcPipPlayb
     }
 
     let stateName = stateOverride ?? Self.stateName(mediaPlayer)
+    if #available(iOS 15.0, *) {
+      VlcAudioDiagnostics.record("snapshot", volume: Int(mediaPlayer.audio?.volume ?? 0),
+        playing: mediaPlayer.isPlaying, pipActive: pictureInPicture?.isActive ?? false)
+    }
     let duration = Self.milliseconds(from: mediaPlayer.media?.length)
     let isSeekable = mediaPlayer.isSeekable
     let trackFingerprint = Self.trackFingerprint(mediaPlayer)

@@ -223,11 +223,14 @@ class DownloadLauncher {
 
     final finalContext = rootNavigatorKey.currentContext ?? navContext;
 
-    if (metadata == null || metadata.size == null) {
+    if (metadata == null ||
+        metadata.error != null ||
+        (metadata.size == null && metadata.hlsPlan == null)) {
       if (finalContext.mounted) {
         _showErrorDialog(
           finalContext,
-          'This source doesn\'t support direct downloading or is currently unavailable. Please try another source.',
+          metadata?.error ??
+              'This source doesn\'t support direct downloading or is currently unavailable. Please try another source.',
           stream,
           item,
           resolveUrl,
@@ -306,7 +309,9 @@ class DownloadLauncher {
         episode: episodeData,
       );
 
-      final extension = _getFileExtension(stream.url, metadata.mimeType);
+      final extension = metadata.hlsPlan != null
+          ? '.m3u8'
+          : _getFileExtension(stream.url, metadata.mimeType);
       String filename;
       if (episodeData != null &&
           item.contentType != MultimediaContentType.movie) {
@@ -334,6 +339,7 @@ class DownloadLauncher {
         episode: episodeData,
         trackingUrl: resolveUrl,
         headers: stream.headers,
+        hlsPlan: metadata.hlsPlan,
       );
 
       if (!started) {

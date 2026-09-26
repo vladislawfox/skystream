@@ -8,6 +8,7 @@ import 'package:skystream/core/domain/entity/multimedia_item.dart';
 import 'package:skystream/core/logger/app_logger.dart';
 import 'package:skystream/core/router/app_router.dart';
 import 'package:skystream/core/services/download_service.dart';
+import 'package:skystream/core/services/hls_download_plan.dart';
 import 'package:skystream/core/services/notification_service.dart';
 import 'package:skystream/features/details/presentation/download_launcher.dart';
 import 'package:skystream/l10n/generated/app_localizations.dart';
@@ -34,6 +35,7 @@ void main() {
     WidgetTester tester, {
     Object? failure,
     bool enqueueSucceeds = true,
+    DownloadMetadata? metadata,
   }) async {
     container = ProviderContainer(
       overrides: [
@@ -42,6 +44,7 @@ void main() {
             ref,
             failure: failure,
             enqueueSucceeds: enqueueSucceeds,
+            metadata: metadata,
           ),
         ),
       ],
@@ -91,6 +94,57 @@ void main() {
   /// the last pump and `flutter_test` fails the test on them.
   Future<void> drainToasts(WidgetTester tester) =>
       tester.pump(const Duration(seconds: 6));
+
+  testWidgets(
+    'HLS confirmation accepts unknown size and preserves the selected episode and rendition',
+    (tester) async {
+      final plan = HlsDownloadPlan({'index.m3u8': '#EXTM3U'}, []);
+      await pumpLauncher(tester, metadata: DownloadMetadata(hlsPlan: plan));
+      final episode = Episode(
+        name: '13',
+        url: 'https://series.test/arrow#s1e13',
+        season: 1,
+        episode: 13,
+      );
+      final series = MultimediaItem(
+        title: 'Arrow',
+        url: 'https://series.test/arrow',
+        posterUrl: '',
+        contentType: MultimediaContentType.series,
+        episodes: [episode],
+      );
+      const selected = StreamResult(
+        url: 'https://cdn.test/s1e13/1080.m3u8',
+        source: 'ICTV · 1080p',
+        headers: {'Referer': 'https://tortuga.test/'},
+      );
+      unawaited(
+        container
+            .read(downloadLauncherProvider)
+            .verifyAndDownload(
+              tester.element(find.byType(Scaffold)),
+              selected,
+              series,
+              episode.url,
+            ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.textContaining('Unknown size'), findsOneWidget);
+      expect(find.textContaining('ICTV · 1080p'), findsOneWidget);
+      await tester.tap(find.text('Download Now'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(downloads.startedUrl, 'https://cdn.test/s1e13/1080.m3u8');
+      expect(downloads.startedFilename, 'S1-E13 13.m3u8');
+      expect(downloads.startedEpisode, same(episode));
+      expect(downloads.startedTrackingUrl, episode.url);
+      expect(downloads.startedHeaders, {'Referer': 'https://tortuga.test/'});
+      expect(downloads.startedPlan, same(plan));
+      await drainToasts(tester);
+    },
+  );
 
   testWidgets('a throwing startDownload becomes a visible error', (
     WidgetTester tester,
@@ -179,17 +233,26 @@ class _StubDownloadService extends DownloadService {
     super.ref, {
     required this.failure,
     required this.enqueueSucceeds,
+    this.metadata,
   });
 
   final Object? failure;
   final bool enqueueSucceeds;
+  final DownloadMetadata? metadata;
   int startCalls = 0;
+  String? startedUrl;
+  String? startedFilename;
+  String? startedTrackingUrl;
+  Episode? startedEpisode;
+  Map<String, String>? startedHeaders;
+  HlsDownloadPlan? startedPlan;
 
   @override
   Future<DownloadMetadata?> getMetadata(
     String url, {
     Map<String, String>? headers,
-  }) async => DownloadMetadata(size: 734003200, mimeType: 'video/mp4');
+  }) async =>
+      metadata ?? DownloadMetadata(size: 734003200, mimeType: 'video/mp4');
 
   @override
   Future<String> getDownloadPath(
@@ -207,8 +270,15 @@ class _StubDownloadService extends DownloadService {
     Episode? episode,
     String? trackingUrl,
     Map<String, String>? headers,
+    HlsDownloadPlan? hlsPlan,
   }) async {
     startCalls++;
+    startedUrl = url;
+    startedFilename = filename;
+    startedTrackingUrl = trackingUrl;
+    startedEpisode = episode;
+    startedHeaders = headers;
+    startedPlan = hlsPlan;
     if (failure != null) throw failure!;
     return enqueueSucceeds;
   }

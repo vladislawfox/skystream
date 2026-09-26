@@ -264,9 +264,7 @@ class VlcPlayerValue {
     final stored = videoSize;
     final orientation = videoOrientation;
     if (orientation != null && stored != null) {
-      return orientation.swapsAxes
-          ? Size(stored.height, stored.width)
-          : stored;
+      return orientation.swapsAxes ? Size(stored.height, stored.width) : stored;
     }
     return codedVideoSize;
   }
@@ -481,7 +479,7 @@ class VlcPlayerValue {
       state: state,
       position: _durationFromMilliseconds(event['position']),
       duration: _durationFromMilliseconds(event['duration']),
-      volume: _intValue(event['volume']),
+      volume: _volumeValue(event['volume']),
       playbackSpeed: _doubleValue(event['playbackSpeed']),
       audioDelay: _durationFromMicroseconds(event['audioDelay']),
       subtitleDelay: _durationFromMicroseconds(event['subtitleDelay']),
@@ -533,6 +531,13 @@ class VlcPlayerValue {
       return null;
     }
     return Duration(milliseconds: value.round());
+  }
+
+  // libVLC reports -100 when its audio output cannot report a volume. Keep
+  // the last known level through output/lifecycle transitions; zero is mute.
+  static int? _volumeValue(Object? value) {
+    final volume = _intValue(value);
+    return volume != null && volume >= 0 ? volume : null;
   }
 
   static Duration? _durationFromMicroseconds(Object? value) {

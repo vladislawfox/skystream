@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' show max;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -832,9 +833,31 @@ class _VlcPlayerControlsState extends ConsumerState<VlcPlayerControls> {
     );
   }
 
+  Offset? _railDragOrigin;
+
+  bool _startsInSystemEdge(Offset position) {
+    final size = context.size;
+    if (size == null) return true;
+    final query = MediaQuery.of(context);
+    // iOS reports zero top insets in landscape/fullscreen even though Control
+    // Center still starts there. Reserve a small edge for system gestures.
+    final minimum = defaultTargetPlatform == TargetPlatform.iOS ? 24.0 : 0.0;
+    double inset(double safe, double gesture) => max(minimum, max(safe, gesture));
+    final safe = query.viewPadding;
+    final gesture = query.systemGestureInsets;
+    return position.dx < inset(safe.left, gesture.left) ||
+        position.dx > size.width - inset(safe.right, gesture.right) ||
+        position.dy < inset(safe.top, gesture.top) ||
+        position.dy > size.height - inset(safe.bottom, gesture.bottom);
+  }
+
   /// Starts a brightness or volume drag based on user gesture configuration.
   Future<void> _railDragStart(DragStartDetails d) async {
+    _dragIsVolume = null;
     if (_isDesktop) return; // no touch rails
+    // Use pointer-down, before the drag recognizer consumes touch slop and
+    // before iOS cancels our gesture to enter PiP or open Control Center.
+    if (_startsInSystemEdge(_railDragOrigin ?? d.localPosition)) return;
     final width = context.size?.width ?? 0;
     if (width <= 0) return;
     final isRight = d.localPosition.dx >= width / 2;
@@ -954,6 +977,7 @@ class _VlcPlayerControlsState extends ConsumerState<VlcPlayerControls> {
 
   void _railDragEnd() {
     _dragIsVolume = null;
+    _railDragOrigin = null;
     _rail.clearAfter(const Duration(milliseconds: 500));
   }
 
@@ -1574,6 +1598,7 @@ class _VlcPlayerControlsState extends ConsumerState<VlcPlayerControls> {
               onDoubleTapDown: (!_isDesktop && settings.doubleTapEnabled)
                   ? (d) => _doubleTapSeek(d.localPosition.dx)
                   : null,
+              onVerticalDragDown: (d) => _railDragOrigin = d.localPosition,
               onVerticalDragStart: (d) => unawaited(_railDragStart(d)),
               onVerticalDragUpdate: _railDragUpdate,
               onVerticalDragEnd: (_) => _railDragEnd(),
