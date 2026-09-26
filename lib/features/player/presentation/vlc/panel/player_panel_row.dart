@@ -20,11 +20,32 @@ import 'package:flutter/services.dart';
 import '../../../../../l10n/generated/app_localizations.dart';
 import '../../widgets/hotstar_player_style.dart';
 import 'player_panel_metrics.dart';
+import '../../../../../shared/focus/app_focus.dart';
 
-/// Surface behind the whole panel. Opaque on purpose: this is composited over
-/// a platform view, where a translucent layer costs a full-size read-back on
-/// every repaint. See the compositing rules in vlc_player_controls.dart.
-const Color kPanelSurface = Color(0xFF0B0E13);
+/// Surface behind the whole panel: obsidian glass, 75 % opaque, so the video
+/// reads through it.
+///
+/// Translucency is free here; a *blur* is not. Alpha is one more channel in a
+/// fill the panel was painting anyway, while a [BackdropFilter] over a platform
+/// view is a drawer-sized effect layer read back on every repaint. See the
+/// header of player_panel_shell.dart, and the compositing rules in
+/// vlc_player_controls.dart.
+///
+/// The number has to be read together with the route's barrier, which is drawn
+/// behind the drawer as well as beside it: at a 45 % barrier this leaves about
+/// 14 % of the picture coming through, which is the most the glass can take and
+/// still hold its text. The worst case is a white frame, where a row's label
+/// still measures 13:1 and its detail line 3.4:1 — and it is the detail line,
+/// not the label, that sets the floor.
+const Color kPanelSurface = Color(0xBF060608);
+
+/// [kPanelSurface] with no glass in it, for the one place a colour has to be
+/// blended down onto the surface rather than drawn over it.
+///
+/// A badge tint alpha-blended against a translucent base comes out translucent
+/// too, and a chip that lets the picture through is a chip with no edge. This
+/// is the same obsidian at full strength.
+const Color _kPanelSurfaceOpaque = Color(0xFF060608);
 
 /// Row background when focused. Solid rather than a scrim so it reads at a
 /// distance on a television.
@@ -45,8 +66,10 @@ BoxDecoration panelRowDecoration({
               : (selected ? _kRowSelected : Colors.transparent)),
     borderRadius: BorderRadius.circular(10),
     border: Border.all(
-      color: focused ? HotstarPlayerStyle.accent : Colors.transparent,
-      width: 2,
+      // White, like every other focus ring in the app and in the chrome. The
+      // accent stays the colour of *selection*, which a row can also be.
+      color: focused ? HotstarPlayerStyle.focusRing : Colors.transparent,
+      width: HotstarPlayerStyle.focusRingWidth,
     ),
   );
 }
@@ -65,6 +88,8 @@ class PanelRow extends StatefulWidget {
     this.selectedLabel,
     this.status,
     this.statusColor,
+    this.outcome,
+    this.outcomeColor,
     this.enabled = true,
     this.autofocus = false,
     this.trailing,
@@ -94,6 +119,11 @@ class PanelRow extends StatefulWidget {
   /// Live state that is not selection: a probe result, a download marker.
   final String? status;
   final Color? statusColor;
+
+  /// A second live fact, drawn after [status] and never folded into it - a
+  /// source that was reachable and then failed to play says both.
+  final String? outcome;
+  final Color? outcomeColor;
 
   final bool enabled;
 
@@ -154,7 +184,7 @@ class _PanelRowState extends State<PanelRow> {
                 vertical: metrics.rowVerticalPadding,
               ),
               decoration: panelRowDecoration(
-                focused: enabled && _focused,
+                focused: enabled && showFocusIndicator(context, _focused),
                 selected: widget.selected,
                 hovered: enabled && _hovered,
               ),
@@ -196,6 +226,7 @@ class _PanelRowState extends State<PanelRow> {
                           ),
                         if (widget.badges.isNotEmpty ||
                             widget.status != null ||
+                            widget.outcome != null ||
                             (widget.selected && widget.selectedLabel != null))
                           Padding(
                             padding: const EdgeInsets.only(top: 6),
@@ -216,6 +247,11 @@ class _PanelRowState extends State<PanelRow> {
                                   PanelBadge(
                                     text: widget.status!,
                                     color: widget.statusColor,
+                                  ),
+                                if (widget.outcome != null)
+                                  PanelBadge(
+                                    text: widget.outcome!,
+                                    color: widget.outcomeColor,
                                   ),
                               ],
                             ),
@@ -279,7 +315,10 @@ class PanelBadge extends StatelessWidget {
       decoration: BoxDecoration(
         color: color == null
             ? HotstarPlayerStyle.panelElevated
-            : Color.alphaBlend(color.withValues(alpha: 0.18), kPanelSurface),
+            : Color.alphaBlend(
+                color.withValues(alpha: 0.18),
+                _kPanelSurfaceOpaque,
+              ),
         borderRadius: BorderRadius.circular(5),
         border: Border.all(color: color ?? metrics.divider, width: 0.8),
       ),
@@ -431,7 +470,7 @@ class _PanelStepperRowState extends State<PanelStepperRow> {
             margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             padding: const EdgeInsets.fromLTRB(10, 4, 4, 4),
             decoration: panelRowDecoration(
-              focused: _focused,
+              focused: showFocusIndicator(context, _focused),
               selected: false,
               hovered: _hovered,
             ),

@@ -1,5 +1,6 @@
 // ignore: unused_import
 import 'package:intl/intl.dart' as intl;
+
 import 'app_localizations.dart';
 
 // ignore_for_file: type=lint
@@ -283,6 +284,14 @@ class AppLocalizationsKn extends AppLocalizations {
 
   @override
   String get pressSearchOrEnter => 'ಪ್ರಾರಂಭಿಸಲು ಸರ್ಚ್ ಕೀ ಅಥವಾ ಎಂಟರ್ ಒತ್ತಿ';
+
+  @override
+  String get recentSearches => 'Recent searches';
+
+  @override
+  String removeFromSearchHistory(String query) {
+    return 'Remove $query from search history';
+  }
 
   @override
   String get noResultsFound => 'ಯಾವುದೇ ಫಲಿತಾಂಶಗಳು ಕಂಡುಬಂದಿಲ್ಲ.';
@@ -907,6 +916,12 @@ class AppLocalizationsKn extends AppLocalizations {
   String get volume => 'ಧ್ವನಿ';
 
   @override
+  String get decrease => 'Decrease';
+
+  @override
+  String get increase => 'Increase';
+
+  @override
   String get brightness => 'ಪ್ರಕಾಶಮಾನ';
 
   @override
@@ -1051,6 +1066,9 @@ class AppLocalizationsKn extends AppLocalizations {
 
   @override
   String get next => 'ಮುಂದಿನದು';
+
+  @override
+  String get previous => 'Previous';
 
   @override
   String get pip => 'ಪಿಐಪಿ';
@@ -1693,4 +1711,66 @@ class AppLocalizationsKn extends AppLocalizations {
 
   @override
   String get selectNetworkBuffer => 'ನೆಟ್‌ವರ್ಕ್ ಬಫರ್ ಆಯ್ಕೆಮಾಡಿ';
+
+  @override
+  String playerGettingLinks(String plugin) {
+    return '$plugin ನಿಂದ ಲಿಂಕ್‌ಗಳನ್ನು ಪಡೆಯಲಾಗುತ್ತಿದೆ…';
+  }
+
+  @override
+  String get playerSourceChecking => 'ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ…';
+
+  @override
+  String get playerSourceOpening => 'ತೆರೆಯಲಾಗುತ್ತಿದೆ…';
+
+  @override
+  String get playerSourceNotChecked => 'ಪರಿಶೀಲಿಸಿಲ್ಲ';
+
+  @override
+  String get playerReasonNoAnswer => 'ಲಿಂಕ್‌ನಿಂದ ಉತ್ತರ ಬಂದಿಲ್ಲ';
+
+  @override
+  String get playerSourceUnplayable => 'ಪ್ಲೇ ಆಗಲಿಲ್ಲ';
+
+  @override
+  String get nuvioPlugins => 'Nuvio plugins';
+
+  @override
+  String get nuvioSearchForStreams => 'Search for streams';
+
+  @override
+  String get nuvioChooseEpisode => 'Choose an episode';
+
+  @override
+  String nuvioScraperCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count scrapers',
+      one: '1 scraper',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get stremioAddons => 'Stremio add-ons';
+
+  @override
+  String get stremioSearchAddons => 'Search Stremio add-ons';
+
+  @override
+  String stremioSearchAddonsForEpisode(int season, int episode) {
+    return 'Search add-ons: S$season E$episode';
+  }
+
+  @override
+  String stremioAddonCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count add-ons',
+      one: '1 add-on',
+    );
+    return '$_temp0';
+  }
 }

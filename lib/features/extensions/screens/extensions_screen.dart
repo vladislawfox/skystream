@@ -2,16 +2,19 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../../core/utils/layout_constants.dart';
 import '../../../core/extensions/models/extension_plugin.dart';
 import '../../../core/extensions/models/extension_repository.dart';
 import '../../../core/extensions/extension_manager.dart';
 import '../providers/extensions_controller.dart';
-import 'plugin_settings_screen.dart';
+import 'plugin_settings_dialog.dart';
 import '../../../shared/widgets/cards_wrapper.dart';
 import '../../../shared/widgets/loading_indicator.dart';
 import '../../../shared/widgets/text_input_dialog.dart';
 import '../../../core/router/app_router.dart';
+import '../../../shared/focus/app_focus.dart';
+
 import 'package:skystream/l10n/generated/app_localizations.dart';
 
 class ExtensionsScreen extends ConsumerStatefulWidget {
@@ -28,16 +31,139 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
   late final TabController _tabController;
   bool _didEnsureInit = false;
 
+  /// One key per tab, so a repair can search the page that is actually on
+  /// screen.
+  ///
+  /// Keys rather than a [FocusScope] around each page, which is the obvious
+  /// way to draw the line and the wrong one: a scope is also the boundary
+  /// directional traversal works within, so a page wrapped in one would trap
+  /// the remote inside it - no way back up to the tabs or the Back button.
+  ///
+  /// Searching the body as a whole is not good enough: during a tab change
+  /// both pages are in the tree, and the first focusable in tree order belongs
+  /// to the page being *left* - whose controls are disposed a beat later. The
+  /// first version of this fix did exactly that and still ended up with
+  /// nothing focused, which is the same dead end wearing a different hat.
+  final List<GlobalKey> _tabKeys = <GlobalKey>[
+    GlobalKey(debugLabel: 'extensions-tab-installed'),
+    GlobalKey(debugLabel: 'extensions-tab-repositories'),
+  ];
+
+  /// Set when something inside a tab switches tabs, so the focus that switch
+  /// is about to destroy can be put back. See [_showRepositoriesTab].
+  bool _wantsBodyFocus = false;
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(_handleTabSettled);
   }
 
   @override
   void dispose() {
+    _tabController.removeListener(_handleTabSettled);
     _tabController.dispose();
     super.dispose();
+  }
+
+  /// Shows the Repositories tab, and takes focus with it.
+  ///
+  /// The focus half is the point, and it is the fix for a dead end on a
+  /// television. When the Installed tab is empty its only control is the
+  /// button that calls this, so the node holding focus is the node switching
+  /// tabs destroys - and Flutter drops primary focus when that happens
+  /// without telling anybody. [FocusManager.primaryFocus] simply becomes
+  /// null, no listener fires, and its `handleKeyMessage` returns early for
+  /// every key that arrives afterwards. The screen stops answering the remote
+  /// completely: no arrow key has anything left to move *from*.
+  ///
+  /// A viewer who came here to install their first repository - which is the
+  /// only reason a fresh install sends them here - could not reach Add
+  /// Repository at all, and the app read as locked.
+  void _showRepositoriesTab() {
+    _wantsBodyFocus = true;
+    _tabController.animateTo(1);
+  }
+
+  /// Puts focus in the new tab once the old one has finished sliding away.
+  void _handleTabSettled() {
+    // The controller notifies twice per change: once as the slide starts and
+    // once as it lands. Only the second is any use - during the first the
+    // incoming page has not been laid out.
+    if (_tabController.indexIsChanging || !_wantsBodyFocus) return;
+    _wantsBodyFocus = false;
+
+    _afterNextFrame(_focusFirstInSelectedTab);
+  }
+
+  /// The same repair, for the second way this screen throws focus away.
+  ///
+  /// Adding the first repository replaces the empty state - a single
+  /// [FilledButton], which is what the viewer just pressed and what still
+  /// holds focus - with the list of repositories. The button is disposed, and
+  /// [FocusManager.primaryFocus] goes quietly to null exactly as it does on a
+  /// tab change. Same dead end, one step further along the same journey: the
+  /// viewer adds the repository they came for and the screen stops answering
+  /// the remote at the moment it starts being useful.
+  ///
+  /// Unlike the tab case this one can simply ask whether focus was lost,
+  /// because by the time this runs the old subtree is gone rather than
+  /// lingering for a frame.
+  void _restoreBodyFocusIfLost() {
+    _afterNextFrame(() {
+      if (!mounted) return;
+      // A real, still-mounted node has it: nothing to repair.
+      final primary = FocusManager.instance.primaryFocus;
+      if (primary != null &&
+          primary is! FocusScopeNode &&
+          primary.context?.mounted == true) {
+        return;
+      }
+      // Not while a dialog is up. Add Repository is a route of its own, and
+      // pulling focus down to the page underneath would take the remote out
+      // of the field the viewer is typing in.
+      final route = ModalRoute.of(context);
+      if (route != null && !route.isCurrent) return;
+      _focusFirstInSelectedTab();
+    });
+  }
+
+  /// Runs [action] once the tree has been rebuilt, and makes sure it runs.
+  ///
+  /// [SchedulerBinding.addPostFrameCallback] waits for a frame that something
+  /// else asks for - it does not ask for one itself. The moment a tab
+  /// animation finishes the app is idle and nothing is going to, so the repair
+  /// below would sit there unrun until the viewer pressed a key, which is the
+  /// one thing they cannot usefully do while focus is lost.
+  void _afterNextFrame(VoidCallback action) {
+    WidgetsBinding.instance.addPostFrameCallback((_) => action());
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  /// Focuses the first control on the tab that is currently selected.
+  void _focusFirstInSelectedTab() {
+    if (!mounted) return;
+    final page = _tabKeys[_tabController.index].currentContext;
+    if (page == null) return;
+    for (final node in FocusScope.of(context).traversalDescendants) {
+      if (!_isInside(node, page)) continue;
+      node.requestFocus();
+      return;
+    }
+  }
+
+  /// Whether [node]'s element sits under [ancestor].
+  static bool _isInside(FocusNode node, BuildContext ancestor) {
+    final context = node.context;
+    if (context == null || !context.mounted) return false;
+    var found = false;
+    context.visitAncestorElements((element) {
+      if (element != ancestor) return true;
+      found = true;
+      return false;
+    });
+    return found;
   }
 
   @override
@@ -50,6 +176,9 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
       });
     }
     ref.listen(extensionsControllerProvider, (previous, next) {
+      // A state change can swap a tab's whole body - an empty state for a
+      // list, or back again - and take the focused control with it.
+      _restoreBodyFocusIfLost();
       if (next is ExtensionsError &&
           (previous is! ExtensionsError || previous.message != next.message)) {
         showDialog<void>(
@@ -74,22 +203,15 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
       controller: _tabController,
       indicatorSize: TabBarIndicatorSize.label,
       indicatorWeight: 3,
-      labelStyle: const TextStyle(
-        fontWeight: FontWeight.bold,
-        fontSize: 15,
-      ),
+      labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
       unselectedLabelStyle: const TextStyle(
         fontWeight: FontWeight.w500,
         fontSize: 15,
       ),
       labelColor: Theme.of(context).colorScheme.primary,
-      unselectedLabelColor: Theme.of(
-        context,
-      ).colorScheme.onSurfaceVariant,
+      unselectedLabelColor: Theme.of(context).colorScheme.onSurfaceVariant,
       indicatorColor: Theme.of(context).colorScheme.primary,
-      dividerColor: Theme.of(
-        context,
-      ).dividerColor.withValues(alpha: 0.2),
+      dividerColor: Theme.of(context).dividerColor.withValues(alpha: 0.2),
       tabs: [
         Tab(text: l10n.installed),
         Tab(text: l10n.repositories),
@@ -100,10 +222,12 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
       controller: _tabController,
       children: [
         FocusTraversalGroup(
+          key: _tabKeys[0],
           policy: ReadingOrderTraversalPolicy(),
           child: _buildInstalledTab(context, ref, state),
         ),
         FocusTraversalGroup(
+          key: _tabKeys[1],
           policy: ReadingOrderTraversalPolicy(),
           child: _buildRepositoriesTab(context, ref, state),
         ),
@@ -227,9 +351,8 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
                   const SizedBox(height: LayoutConstants.spacingMd),
                   Text(
                     l10n.noExtensionsInstalled,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold),
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: LayoutConstants.spacingSm),
@@ -244,9 +367,7 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
                   FilledButton.icon(
                     icon: const Icon(Icons.explore_outlined),
                     label: Text(l10n.browseRepositories),
-                    onPressed: () {
-                      _tabController.animateTo(1);
-                    },
+                    onPressed: _showRepositoriesTab,
                   ),
                 ],
               ),
@@ -307,9 +428,8 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
                   const SizedBox(height: LayoutConstants.spacingMd),
                   Text(
                     l10n.noReposFound,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold),
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: LayoutConstants.spacingSm),
@@ -356,16 +476,14 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
           ),
           child: _FocusableCard(
             margin: EdgeInsets.zero,
-            borderColor: Theme.of(
-              context,
-            ).colorScheme.primary.withValues(alpha: 0.3),
+            borderColor: Theme.of(context).colorScheme.primary
+                .withValues(alpha: 0.3),
             // A card holding one row still hands the focus affordance to the
             // row, so this is marked like every other row in the list.
             child: _FocusableRow(
               child: ListTile(
-                focusColor: Theme.of(
-                  context,
-                ).colorScheme.primary.withValues(alpha: 0.15),
+                focusColor: Theme.of(context).colorScheme.primary
+                    .withValues(alpha: 0.15),
                 leading: Icon(
                   Icons.add_circle_outline,
                   color: Theme.of(context).colorScheme.primary,
@@ -524,9 +642,8 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
         horizontal: LayoutConstants.spacingMd,
         vertical: LayoutConstants.spacingXs,
       ),
-      borderColor: Theme.of(
-        context,
-      ).colorScheme.tertiary.withValues(alpha: 0.5),
+      borderColor: Theme.of(context).colorScheme.tertiary
+          .withValues(alpha: 0.5),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -708,9 +825,8 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
                     height: 1,
                     indent: 56,
                     endIndent: 16,
-                    color: Theme.of(
-                      context,
-                    ).dividerColor.withValues(alpha: 0.5),
+                    color: Theme.of(context).dividerColor
+                        .withValues(alpha: 0.5),
                   ),
               ],
             );
@@ -761,10 +877,16 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
       hintText: l10n.repoUrlOrShortcode,
       confirmLabel: l10n.addRepo,
     );
-    if (url == null || url.isEmpty || !context.mounted) return;
+    if (url == null || url.isEmpty || !context.mounted) {
+      // Cancelled. The opener may still have been swapped out underneath the
+      // dialog, so check anyway - it is a no-op when focus is fine.
+      _restoreBodyFocusIfLost();
+      return;
+    }
     unawaited(
       ref.read(extensionsControllerProvider.notifier).addRepository(url),
     );
+    _restoreBodyFocusIfLost();
   }
 }
 
@@ -822,9 +944,8 @@ class _PluginTileState extends ConsumerState<_PluginTile> {
         leading: Container(
           padding: const EdgeInsets.all(LayoutConstants.spacingXs),
           decoration: BoxDecoration(
-            color: Theme.of(
-              context,
-            ).colorScheme.tertiary.withValues(alpha: 0.1),
+            color: Theme.of(context).colorScheme.tertiary
+                .withValues(alpha: 0.1),
             borderRadius: BorderRadius.circular(8),
           ),
           child: Icon(
@@ -891,9 +1012,8 @@ class _PluginTileState extends ConsumerState<_PluginTile> {
         height: 44,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: Theme.of(
-            context,
-          ).colorScheme.primaryContainer.withValues(alpha: 0.5),
+          color: Theme.of(context).colorScheme.primaryContainer
+              .withValues(alpha: 0.5),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Icon(
@@ -904,9 +1024,8 @@ class _PluginTileState extends ConsumerState<_PluginTile> {
       ),
       title: Text(
         widget.plugin.name,
-        style: Theme.of(
-          context,
-        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+        style: Theme.of(context).textTheme.titleMedium
+            ?.copyWith(fontWeight: FontWeight.w600),
         overflow: TextOverflow.ellipsis,
       ),
       subtitle: _buildSubtitle(context, isInstalled, installedPlugin),
@@ -985,12 +1104,12 @@ class _PluginTileState extends ConsumerState<_PluginTile> {
                         icon: const Icon(Icons.settings_outlined),
                         tooltip: l10n.settings,
                         onPressed: () async {
-                          await Navigator.of(context).push<void>(
-                            MaterialPageRoute<void>(
-                              builder: (context) =>
-                                  PluginSettingsScreen(plugin: installedPlugin),
-                            ),
+                          await PluginSettingsDialog.open(
+                            context,
+                            installedPlugin,
                           );
+                          // Back to the gear it came from, so a remote does
+                          // not have to walk the list again.
                           if (context.mounted) {
                             _settingsFocusNode.requestFocus();
                           }
@@ -1123,13 +1242,13 @@ class _RowFocusNotification extends Notification {
 /// single row and tells the enclosing [_FocusableCard] to stay quiet while it
 /// does. Two departures from how [CardsWrapper] applies the same recipe:
 ///
-/// The ring and tint are painted behind the child, not in front of it as
-/// [CardsWrapper] does; a row's child is text on a transparent [Material], so
-/// a foreground tint would wash out the label it points at.
+/// The ring is painted behind the child, not in front of it as [CardsWrapper]
+/// does; a row's child is text on a transparent [Material], so a foreground
+/// layer would sit over the label it points at.
 ///
-/// An opaque fill sits between the glow and the row, because Flutter paints a
-/// [BoxShadow] across the whole shape rather than just its rim, and without
-/// something opaque in the middle the glow floods the row.
+/// An opaque fill sits between the shadow and the row, because Flutter paints
+/// a [BoxShadow] across the whole shape rather than just its rim, and without
+/// something opaque in the middle it floods the row.
 class _FocusableRow extends StatefulWidget {
   final Widget child;
 
@@ -1168,8 +1287,7 @@ class _FocusableRowState extends State<_FocusableRow> {
         margin: const EdgeInsets.all(CardFocusAffordance.ringWidth),
         decoration: CardFocusAffordance.glow(
           borderRadius: _radius,
-          accent: colorScheme.primary,
-          focused: _isFocused,
+          focused: showFocusIndicator(context, _isFocused),
         ),
         child: DecoratedBox(
           decoration: BoxDecoration(
@@ -1180,9 +1298,9 @@ class _FocusableRowState extends State<_FocusableRow> {
           ),
           child: Container(
             decoration: CardFocusAffordance.ring(
+              context,
               borderRadius: _radius,
-              accent: colorScheme.primary,
-              focused: _isFocused,
+              focused: showFocusIndicator(context, _isFocused),
             ),
             // The row's own ink surface. A ListTile paints its splashes on the
             // nearest Material ancestor, and ink is painted before that

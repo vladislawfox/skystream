@@ -8,7 +8,6 @@ class FocusableItem extends StatefulWidget {
   final VoidCallback? onLongPress;
   final double focusedScale;
   final double hoverScale;
-  final Color? focusColor;
   final BorderRadius? borderRadius;
 
   const FocusableItem({
@@ -18,7 +17,6 @@ class FocusableItem extends StatefulWidget {
     this.onLongPress,
     this.focusedScale = 1.05,
     this.hoverScale = 1.02,
-    this.focusColor,
     this.borderRadius,
   });
 
@@ -48,11 +46,12 @@ class _FocusableItemState extends State<FocusableItem>
   }
 
   void _updateState() {
-    // In D-pad/keyboard mode the ring+tint+glow is the focus indicator; skip
-    // scale to prevent edge items from overflowing the viewport.
-    final isDpad =
+    // Hover grows the item; directional focus does not - see [CardsWrapper],
+    // which this mirrors and which explains what growing it looked like on a
+    // television.
+    final isDirectional =
         FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
-    final shouldScale = _isHovered || (_isFocused && !isDpad);
+    final shouldScale = _isHovered || (_isFocused && !isDirectional);
     if (shouldScale) {
       _ctrl.forward();
     } else {
@@ -139,17 +138,14 @@ class _FocusableItemState extends State<FocusableItem>
               // identical wherever it is used.
               final borderRadius =
                   widget.borderRadius ?? BorderRadius.circular(12);
-              final accent =
-                  widget.focusColor ?? Theme.of(context).colorScheme.primary;
               return Container(
                 decoration: CardFocusAffordance.glow(
                   borderRadius: borderRadius,
-                  accent: accent,
                   focused: _isFocused,
                 ),
                 foregroundDecoration: CardFocusAffordance.ring(
+                  context,
                   borderRadius: borderRadius,
-                  accent: accent,
                   focused: _isFocused,
                 ),
                 child: widget.child,

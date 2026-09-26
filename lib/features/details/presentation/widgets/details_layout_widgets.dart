@@ -4,19 +4,25 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:background_downloader/background_downloader.dart';
 import 'package:collection/collection.dart';
+
 import '../downloaded_file_provider.dart';
 
 import 'package:skystream/core/domain/entity/multimedia_item.dart';
 import 'package:skystream/core/storage/history_repository.dart';
 import 'package:skystream/core/utils/layout_constants.dart';
 import 'package:skystream/shared/widgets/custom_widgets.dart';
+
 import '../details_controller.dart';
+
 import 'package:skystream/core/extensions/extension_manager.dart';
 import 'package:skystream/core/services/download_service.dart';
+
 import '../download_launcher.dart';
 import 'download_progress_dialog.dart';
 import 'download_management_dialog.dart';
 import 'episode_card.dart';
+import '../../../../shared/focus/app_focus.dart';
+
 import 'package:skystream/core/providers/device_info_provider.dart';
 import 'package:skystream/core/utils/responsive_breakpoints.dart';
 import 'package:skystream/l10n/generated/app_localizations.dart';
@@ -329,9 +335,8 @@ class DetailsActionButtons extends HookConsumerWidget {
               child: LinearProgressIndicator(
                 value: progress,
                 minHeight: 6,
-                backgroundColor: Theme.of(
-                  context,
-                ).colorScheme.onSurface.withValues(alpha: 0.1),
+                backgroundColor: Theme.of(context).colorScheme.onSurface
+                    .withValues(alpha: 0.1),
                 valueColor: AlwaysStoppedAnimation<Color>(
                   Theme.of(context).colorScheme.primary,
                 ),
@@ -377,10 +382,7 @@ class DetailsActionButtons extends HookConsumerWidget {
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        progressWidget,
-        actionRow,
-      ],
+      children: [progressWidget, actionRow],
     );
   }
 }
@@ -443,9 +445,8 @@ class SliverDetailsDesktopEpisodeGrid extends ConsumerWidget {
               children: [
                 Text(
                   AppLocalizations.of(context)!.episodes,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: Theme.of(context).textTheme.headlineSmall
+                      ?.copyWith(fontWeight: FontWeight.bold),
                 ),
                 DetailsEpisodeFilterBar(
                   itemUrl: itemUrl,
@@ -493,10 +494,9 @@ class SliverDetailsDesktopEpisodeGrid extends ConsumerWidget {
                             ),
                             child: i < rowEpisodes.length
                                 ? EpisodeCard(
-                                        episode: rowEpisodes[i],
-                                        parentItem: parentItem,
-                                      )
-                                      as Widget
+                                    episode: rowEpisodes[i],
+                                    parentItem: parentItem,
+                                  ) as Widget
                                 : const SizedBox.shrink(),
                           ),
                         ),
@@ -570,9 +570,8 @@ class SliverDetailsEpisodeList extends ConsumerWidget {
               children: [
                 Text(
                   AppLocalizations.of(context)!.episodes,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                  style: Theme.of(context).textTheme.titleLarge
+                      ?.copyWith(fontWeight: FontWeight.bold),
                 ),
                 DetailsEpisodeFilterBar(
                   itemUrl: itemUrl,
@@ -671,15 +670,14 @@ class _DetailsEpisodeFilterBarState
                     child: DropdownButton<int>(
                       focusNode: _dropdownFocusNode,
                       value: selectedIndex,
-                      dropdownColor: Theme.of(
-                        context,
-                      ).colorScheme.surfaceContainerHigh,
+                      dropdownColor: Theme.of(context)
+                          .colorScheme
+                          .surfaceContainerHigh,
                       underline: const SizedBox(),
                       elevation: 4,
                       borderRadius: BorderRadius.circular(12),
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
+                      style: Theme.of(context).textTheme.bodyMedium
+                          ?.copyWith(fontWeight: FontWeight.bold),
                       icon: Icon(
                         Icons.keyboard_arrow_down_rounded,
                         size: 20,
@@ -700,9 +698,8 @@ class _DetailsEpisodeFilterBarState
                         if (val != null) {
                           ref
                               .read(
-                                detailsControllerProvider(
-                                  widget.itemUrl,
-                                ).notifier,
+                                detailsControllerProvider(widget.itemUrl)
+                                    .notifier,
                               )
                               .setRangeIndex(val);
                         }
@@ -795,6 +792,7 @@ class _LanguageButtonState extends State<_LanguageButton> {
 
   @override
   Widget build(BuildContext context) {
+    final showFocus = showFocusIndicator(context, _isFocused);
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -807,20 +805,18 @@ class _LanguageButtonState extends State<_LanguageButton> {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
           decoration: BoxDecoration(
             color: widget.isSelected
-                ? Theme.of(
-                    context,
-                  ).colorScheme.primary.withValues(alpha: 40 / 255)
+                ? Theme.of(context).colorScheme.primary
+                      .withValues(alpha: 40 / 255)
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
-              color: _isFocused
-                  ? Colors.white
+              color: showFocus
+                  ? AppFocus.ringColor(context)
                   : (widget.isSelected
-                        ? Theme.of(
-                            context,
-                          ).colorScheme.primary.withValues(alpha: 80 / 255)
+                        ? Theme.of(context).colorScheme.primary
+                              .withValues(alpha: 80 / 255)
                         : Colors.transparent),
-              width: _isFocused ? 2 : 1,
+              width: showFocus ? AppFocus.ringWidth : 1,
             ),
           ),
           child: Text(
@@ -856,9 +852,8 @@ class DetailsChip extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: Theme.of(
-          context,
-        ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w500),
+        style: Theme.of(context).textTheme.bodySmall
+            ?.copyWith(fontWeight: FontWeight.w500),
       ),
     );
   }
@@ -1009,9 +1004,8 @@ class DetailsDesktopEpisodeColumn extends ConsumerWidget {
             children: [
               Text(
                 AppLocalizations.of(context)!.episodes,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
+                style: Theme.of(context).textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
               ),
               DetailsEpisodeFilterBar(
                 itemUrl: itemUrl,
@@ -1060,10 +1054,9 @@ class DetailsDesktopEpisodeColumn extends ConsumerWidget {
                               ),
                               child: i < rowEpisodes.length
                                   ? EpisodeCard(
-                                          episode: rowEpisodes[i],
-                                          parentItem: parentItem,
-                                        )
-                                        as Widget
+                                      episode: rowEpisodes[i],
+                                      parentItem: parentItem,
+                                    ) as Widget
                                   : const SizedBox.shrink(),
                             ),
                           ),

@@ -206,6 +206,21 @@ class StorageService {
     return _settingsBox.get('sidebar_expanded') as bool?;
   }
 
+  // --- Full screen mode ---
+
+  /// Whether the last session was left in full screen mode.
+  ///
+  /// Null means no session ever chose, which is not the same as `false`: a
+  /// first launch stays windowed either way, but only a recorded `false`
+  /// survives a launch that passed `--full-screen`.
+  Future<void> setFullScreenMode(bool enabled) async {
+    await _settingsBox.put('full_screen_mode', enabled);
+  }
+
+  bool? getFullScreenMode() {
+    return _settingsBox.get('full_screen_mode') as bool?;
+  }
+
   // --- App update prompt ---
 
   /// The release tag the user last dismissed the update dialog on. One
@@ -362,6 +377,32 @@ class StorageService {
     return (_settingsBox.get('watch_history_enabled', defaultValue: true)
             as bool?) ??
         true;
+  }
+
+  // --- Search History ---
+
+  /// Recent search queries, most-recent-first.
+  ///
+  /// Shared by every search surface (the search tab, the home delegate and
+  /// the explore delegate) so a query typed in one shows up as a recent in
+  /// the others, the way it does across YouTube's surfaces.
+  ///
+  /// Stored in the settings box, so "Reset Data" clears it along with
+  /// everything else there - no separate teardown needed.
+  static const String kSearchHistoryKey = 'search_history';
+
+  Future<void> setSearchHistory(List<String> queries) async {
+    await _settingsBox.put(kSearchHistoryKey, queries);
+  }
+
+  /// Reads the stored queries, tolerating whatever Hive hands back.
+  ///
+  /// Hive returns a `List<dynamic>` for a list written as `List<String>`, so
+  /// the cast has to go element by element; a hard `as List<String>` throws.
+  List<String> getSearchHistory() {
+    final raw = _settingsBox.get(kSearchHistoryKey);
+    if (raw is! List) return const [];
+    return raw.whereType<String>().toList(growable: false);
   }
 
   // --- Window Settings ---

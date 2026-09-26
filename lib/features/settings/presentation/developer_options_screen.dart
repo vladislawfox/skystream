@@ -11,7 +11,9 @@ import '../../../core/domain/entity/multimedia_item.dart';
 import '../../../core/providers/device_info_provider.dart';
 import '../../../core/router/app_router.dart';
 import 'widgets/settings_widgets.dart';
+
 import 'package:skystream/l10n/generated/app_localizations.dart';
+
 import '../../../core/services/notification_service.dart';
 
 import 'package:flutter/foundation.dart';
@@ -47,66 +49,68 @@ class _DeveloperOptionsScreenState
         child: FocusTraversalGroup(
           policy: ReadingOrderTraversalPolicy(),
           child: ListView(
-            padding: const EdgeInsets.all(8),
+            // Vertical only; SettingsGroup owns the horizontal inset.
+            padding: const EdgeInsets.symmetric(vertical: 8),
             children: [
-            SettingsGroup(
-              title: l10n.debugTools,
-              children: [
-                SettingsTile(
-                  icon: Icons.video_file_rounded,
-                  title: l10n.playLocalVideo,
-                  subtitle: l10n.playLocalVideoSubtitle,
-                  onTap: () => _pickLocalVideo(context),
-                ),
-                SettingsTile(
-                  icon: Icons.link_rounded,
-                  title: l10n.streamUrl,
-                  subtitle: l10n.streamUrlSubtitle,
-                  onTap: () => _showStreamUrlDialog(
-                    context,
-                    deviceAsync.asData?.value.isTv ?? false,
-                  ),
-                ),
-                SettingsTile(
-                  icon: Icons.stream,
-                  title: l10n.streamTorrent,
-                  subtitle: l10n.streamTorrentSubtitle,
-                  onTap: () => _pickTorrentFile(context),
-                ),
-                if (kDebugMode)
+              SettingsGroup(
+                title: l10n.debugTools,
+                children: [
                   SettingsTile(
-                    icon: Icons.folder_copy_rounded,
-                    title: l10n.loadPluginFromAssets,
-                    subtitle: _devLoadAssets ? l10n.enabled : l10n.disabled,
-                    isLast: true,
-                    trailing: Switch(
-                      value: _devLoadAssets,
-                      onChanged: (val) => _toggleAssetLoading(context, val),
-                    ),
-                    onTap: () => _toggleAssetLoading(context, !_devLoadAssets),
+                    icon: Icons.video_file_rounded,
+                    title: l10n.playLocalVideo,
+                    subtitle: l10n.playLocalVideoSubtitle,
+                    onTap: () => _pickLocalVideo(context),
                   ),
-              ],
-            ),
-            SettingsGroup(
-              title: l10n.diagnostics,
-              children: [
-                SettingsTile(
-                  icon: Icons.bug_report_rounded,
-                  title: l10n.viewLogs,
-                  subtitle: l10n.viewLogsSubtitle,
-                  isLast: true,
-                  onTap: () {
-                    // The bounded, redacted log history exists in every build.
-                    unawaited(const AppLogsRoute().push<void>(context));
-                  },
-                ),
-              ],
-            ),
-          ],
+                  SettingsTile(
+                    icon: Icons.link_rounded,
+                    title: l10n.streamUrl,
+                    subtitle: l10n.streamUrlSubtitle,
+                    onTap: () => _showStreamUrlDialog(
+                      context,
+                      deviceAsync.asData?.value.isTv ?? false,
+                    ),
+                  ),
+                  SettingsTile(
+                    icon: Icons.stream,
+                    title: l10n.streamTorrent,
+                    subtitle: l10n.streamTorrentSubtitle,
+                    onTap: () => _pickTorrentFile(context),
+                  ),
+                  if (kDebugMode)
+                    SettingsTile(
+                      icon: Icons.folder_copy_rounded,
+                      title: l10n.loadPluginFromAssets,
+                      subtitle: _devLoadAssets ? l10n.enabled : l10n.disabled,
+                      isLast: true,
+                      trailing: Switch(
+                        value: _devLoadAssets,
+                        onChanged: (val) => _toggleAssetLoading(context, val),
+                      ),
+                      onTap: () =>
+                          _toggleAssetLoading(context, !_devLoadAssets),
+                    ),
+                ],
+              ),
+              SettingsGroup(
+                title: l10n.diagnostics,
+                children: [
+                  SettingsTile(
+                    icon: Icons.bug_report_rounded,
+                    title: l10n.viewLogs,
+                    subtitle: l10n.viewLogsSubtitle,
+                    isLast: true,
+                    onTap: () {
+                      // The bounded, redacted log history exists in every build.
+                      unawaited(const AppLogsRoute().push<void>(context));
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
-    ),
-  );
+    );
 
     if (widget.isEmbedded) {
       return content;

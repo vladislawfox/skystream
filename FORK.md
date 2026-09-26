@@ -1,13 +1,16 @@
 # Maintained iOS fork
 
 This personal fork tracks [akashdh11/skystream](https://github.com/akashdh11/skystream).
-The installed iPhone build uses `ios-local-build`, based on upstream commit
-`71a60612d32c1de2b63b7e99d20444a2c2265a76` (app version `2.7.6`).
+`main` now contains the personal iOS fixes. The rollback tag
+`ios-v2.7.6+7-rollback` points to `5d804552`, the source of the signed 2.7.6+7
+build. The v2.8.0 integration is developed on `update/upstream-v2.8.0` until
+validation and device acceptance are complete.
 
 ## Branches and local changes
 
-- `main` follows upstream `master` without fork-specific commits.
-- `ios-local-build` is the default branch and contains the maintained changes.
+- `main` is the maintained fork, not an unmodified upstream mirror.
+- `ios-local-build` and `ios-picture-in-picture` retain the previous work.
+- `update/upstream-v2.8.0` merges stable upstream `v2.8.0` (`12fb9a0d`).
 - `origin` is `https://github.com/vladislawfox/skystream.git`.
 - `upstream` is `https://github.com/akashdh11/skystream.git`.
 
@@ -43,35 +46,35 @@ Their implementations are not embedded in the app.
 
 ## Updating from upstream
 
-Start with a clean working tree. These commands fast-forward the mirror branch,
-then merge upstream changes into the maintained branch without rewriting its
-history:
+Start with a clean working tree and tag the accepted build before updating.
+Create an integration branch from the maintained `main`, then merge a reviewed
+stable upstream tag without rewriting history:
 
 ```sh
-git fetch upstream
+git fetch origin
+git fetch upstream --tags
 git switch main
-git merge --ff-only upstream/master
-git push origin main
-git switch ios-local-build
-git merge main
+git merge --ff-only origin/main
+git switch -c update/upstream-v2.8.0
+git merge --no-ff v2.8.0
 ```
 
-Resolve any conflicts in the network, dependency or signing files, then run the
-checks below and build/install on the iPhone. Once verified:
+Resolve conflicts while keeping the fork's network, PiP, download and signing
+changes. Run the checks below, build with an increasing local build number and
+the same bundle identity, then install over the existing app. Push the candidate
+branch for review; fast-forward `main` only after accepting the updated build.
+Do not reset or force-push shared branches.
 
-```sh
-git push origin ios-local-build
-```
-
-If `--ff-only` refuses the update, inspect the branch history before proceeding.
-Do not reset or force-push a branch to resolve it. An upstream merge is a source
-update; installing the rebuilt app is still required to update the phone.
+To restore the previous app, reinstall the locally retained signed 2.7.6+7 app,
+or build a fresh checkout of `ios-v2.7.6+7-rollback` using Flutter 3.47.1. The tag
+preserves source; a development-signed app may need re-signing after its profile
+expires. Installing an app does not change Git branches.
 
 ## Build and tests
 
-The verified setup used Flutter `3.47.1` / Dart `3.13.1`, Xcode `27.0` and
-CocoaPods `1.17.0` on Apple Silicon. Follow upstream's Flutter version when
-reviewing a later upstream update. From the repository root:
+The v2.8.0 candidate uses upstream's Flutter `3.47.5` / Dart `3.13.4`, Xcode
+`27.0` and CocoaPods `1.17.0` on Apple Silicon. The rollback build used Flutter
+`3.47.1` / Dart `3.13.1`. From the repository root:
 
 ```sh
 flutter pub get --enforce-lockfile
@@ -246,3 +249,29 @@ Automatic Home Screen entry, close versus restore gestures, audio/subtitle sync,
 calls/headphone interruptions and sustained playback still require hands-on
 verification on the phone; unit tests and compilation alone do not establish
 those behaviors.
+
+## v2.8.0 volume integration
+
+Upstream adds system-volume routing on handsets. This fork retains VLC gain on
+iOS: flutter_volume_controller 2.0.2 changes AVAudioSession to `.ambient` when
+its listener starts, and calls `setActive(false)` when the listener is removed.
+PiP removes the Flutter controls while native playback continues, so that
+listener cannot own the shared audio session. Hardware buttons still control
+iOS system volume; the in-app slider controls VLC gain as in the rollback build.
+Other platforms retain upstream volume routing. Supporting an iOS system-volume
+slider later requires an observer that does not change session ownership.
+
+### Integration verification, 2026-09-27
+
+The v2.8.0 candidate passed 1897 app tests (six conditional live/golden probes
+skipped), 296 VLC package tests, 54 native PiP policy/frame checks and 17 NV12
+padding checks. Full Dart analysis found no issues. All nine RunnerTests passed
+on the iPhone, including real offline HLS playback and unchanged 60% gain through
+PiP entry/exit with zero backward presentation-clock steps. A live UAKino check
+through the updated JavaScriptCore worker and Apple URLSession covered home,
+search, movie/series details, stream resolution, HLS, subtitles and poster loading.
+
+The signed profile 2.8.0+8 passed strict code-signature verification and was
+installed and launched over the existing app. Independent integration review
+found no actionable issue. Device acceptance of normal viewing gestures and
+longer playback is still pending; `main` and the rollback tag retain 2.7.6+7.

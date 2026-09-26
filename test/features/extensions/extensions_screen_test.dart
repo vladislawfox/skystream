@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:skystream/shared/focus/app_focus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:skystream/features/extensions/screens/extensions_screen.dart';
 import 'package:skystream/features/extensions/providers/extensions_controller.dart';
@@ -19,6 +20,21 @@ class MockExtensionsController extends ExtensionsController {
 
   @override
   Future<void> ensureInitialized() async {}
+}
+
+/// A controller the test can push new states through, to stand in for a
+/// repository finishing its install.
+class MutableExtensionsController extends ExtensionsController {
+  MutableExtensionsController(this._initial);
+  final ExtensionsState _initial;
+
+  @override
+  ExtensionsState build() => _initial;
+
+  @override
+  Future<void> ensureInitialized() async {}
+
+  void push(ExtensionsState next) => state = next;
 }
 
 class MockExtensionManager extends ExtensionManager {
@@ -142,6 +158,7 @@ void main() {
   );
 
   group('plugin row focus affordance', _focusAffordanceTests);
+  group('TV dead ends', _tvDeadEndTests);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,8 +187,8 @@ void main() {
     // Matched on the recipe's own signature, not on position in the tree: an
     // AnimatedContainer builds a plain Container, so the section card itself
     // turns up in this walk and must not be mistaken for the row. Only the
-    // row strokes its border outside the box, and only the row's glow is
-    // CardFocusAffordance.glowOpacity (the card's is 0.25).
+    // row strokes its border outside the box, and the two shadows differ in
+    // spread (the card's is not zero).
     final border = decoration.border;
     if (border is Border &&
         border.top.strokeAlign == BorderSide.strokeAlignOutside) {
@@ -262,15 +279,27 @@ Widget _app(ExtensionsState state) => ProviderScope(
 );
 
 void _focusAffordanceTests() {
+  // The affordance is input-aware: it is drawn for a remote or a keyboard and
+  // not for a finger, so a test that means to see it has to say which input
+  // it is standing in for. Without this the default on Android resolves to
+  // `touch` and every assertion below would be measuring nothing.
+  setUp(() {
+    FocusManager.instance.highlightStrategy =
+        FocusHighlightStrategy.alwaysTraditional;
+  });
+  tearDown(() {
+    FocusManager.instance.highlightStrategy = FocusHighlightStrategy.automatic;
+  });
+
   testWidgets(
     'focusing one plugin row rings that row and leaves its neighbour plain',
     (WidgetTester tester) async {
       await tester.pumpWidget(_app(_twoInstalled()));
       await tester.pumpAndSettle();
 
-      final primary = Theme.of(
+      final scheme = Theme.of(
         tester.element(find.text('Plugin A')),
-      ).colorScheme.primary;
+      ).colorScheme;
 
       // Nothing focused yet: neither row draws anything.
       expect(_rowLayers(tester, find.text('Plugin A')).ring, isNull);
@@ -287,30 +316,28 @@ void _focusAffordanceTests() {
 
       final focused = _rowLayers(tester, find.text('Plugin B'));
 
-      // Ring: accent, the shared width, stroked outside so the row keeps its
+      // Ring: neutral, the shared width, stroked outside so the row keeps its
       // full content width.
       final ring = focused.ring;
       expect(ring, isNotNull, reason: 'focused row drew no ring');
       final side = (ring!.border! as Border).top;
-      expect(side.color, primary);
+      expect(
+        side.color,
+        scheme.onSurface,
+        reason: 'a focus ring is neutral; the accent belongs to selection',
+      );
       expect(side.width, CardFocusAffordance.ringWidth);
       expect(side.strokeAlign, BorderSide.strokeAlignOutside);
 
-      // Tint, on the same layer as the ring and therefore behind the label.
-      expect(
-        ring.color,
-        primary.withValues(alpha: CardFocusAffordance.tintOpacity),
-      );
+      // Nothing else on that layer: the accent wash that used to sit here
+      // recoloured the label the ring is pointing at.
+      expect(ring.color, isNull);
 
-      // Glow, on its own layer behind the row.
+      // The lift, on its own layer behind the row, and a plain shadow rather
+      // than an accent glow.
       final glow = focused.glow;
-      expect(glow, isNotNull, reason: 'focused row drew no glow');
-      expect(glow!.boxShadow!.single.blurRadius,
-          CardFocusAffordance.glowBlurRadius);
-      expect(
-        glow.boxShadow!.single.color,
-        primary.withValues(alpha: CardFocusAffordance.glowOpacity),
-      );
+      expect(glow, isNotNull, reason: 'focused row drew no lift');
+      expect(glow!.boxShadow!.single.color, AppFocus.shadows(focused: true)!.single.color);
 
       // The neighbour is untouched — this is the whole complaint: from three
       // metres you must be able to tell the fifth row from the fourth.
@@ -429,4 +456,115 @@ void _focusAffordanceTests() {
       expect(_rowLayers(tester, find.text('Plugin B')).ring, isNull);
     },
   );
+}
+
+
+/// The two ways this screen used to throw focus away, and the reason a fresh
+/// install read as locked on a television.
+///
+/// Flutter drops [FocusManager.primaryFocus] to null when the node holding it
+/// is disposed, and tells nobody: no listener fires, and `handleKeyMessage`
+/// returns early for every key that arrives afterwards. So a screen whose only
+/// control destroys itself stops answering the remote completely - not "the
+/// button did not highlight" but "no arrow key has anything left to move
+/// from". Both paths below do exactly that, and both are on the one journey a
+/// first-time viewer has to complete before the app can play anything.
+void _tvDeadEndTests() {
+  /// Asserts focus is on a real, live control inside the tab body.
+  void expectFocusInBody(WidgetTester tester) {
+    final primary = FocusManager.instance.primaryFocus;
+    expect(primary, isNotNull, reason: 'focus was dropped entirely');
+    expect(
+      primary,
+      isNot(isA<FocusScopeNode>()),
+      reason: 'a scope holding focus answers no arrow keys',
+    );
+    final context = primary!.context;
+    expect(context?.mounted, isTrue, reason: 'focused node is not on screen');
+
+    final body = tester.element(find.byType(TabBarView));
+    var inside = false;
+    context!.visitAncestorElements((element) {
+      if (element != body) return true;
+      inside = true;
+      return false;
+    });
+    expect(inside, isTrue, reason: 'focus left the tab body');
+  }
+
+  ExtensionsSuccess empty() => const ExtensionsSuccess(
+    repositories: [],
+    installedPlugins: [],
+    availablePlugins: {},
+    availableUpdates: {},
+    installingPlugins: {},
+  );
+
+  ExtensionsSuccess withRepository() => ExtensionsSuccess(
+    repositories: [
+      ExtensionRepository(
+        name: 'Test Repo',
+        url: 'https://example.com/repo.json',
+        pluginLists: const [],
+      ),
+    ],
+    installedPlugins: const [],
+    availablePlugins: const {},
+    availableUpdates: const {},
+    installingPlugins: const {},
+  );
+
+  Widget hostFor(MutableExtensionsController controller) => ProviderScope(
+    overrides: [
+      extensionsControllerProvider.overrideWith(() => controller),
+      extensionManagerProvider.overrideWith(() => MockExtensionManager()),
+    ],
+    child: const MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: ExtensionsScreen(),
+    ),
+  );
+
+  testWidgets('Browse Repositories carries focus into the tab it opens', (
+    tester,
+  ) async {
+    await tester.pumpWidget(hostFor(MutableExtensionsController(empty())));
+    await tester.pumpAndSettle();
+
+    // The Installed tab's empty state is this one button, so it is both what
+    // the viewer presses and what the press destroys.
+    final browse = find.widgetWithText(FilledButton, 'Browse Repositories');
+    expect(browse, findsOneWidget);
+    await _focusOn(tester, browse);
+
+    await tester.tap(browse);
+    await tester.pumpAndSettle();
+
+    expectFocusInBody(tester);
+    expect(find.widgetWithText(FilledButton, 'Add Repository'), findsOneWidget);
+  });
+
+  testWidgets('adding the first repository does not strand the remote', (
+    tester,
+  ) async {
+    final controller = MutableExtensionsController(empty());
+    await tester.pumpWidget(hostFor(controller));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Browse Repositories'));
+    await tester.pumpAndSettle();
+
+    final add = find.widgetWithText(FilledButton, 'Add Repository');
+    await _focusOn(tester, add);
+    expectFocusInBody(tester);
+
+    // The repository lands. The empty state - and the focused button in it -
+    // is replaced by the list, exactly as it is after a real install.
+    controller.push(withRepository());
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(FilledButton, 'Add Repository'), findsNothing);
+    expectFocusInBody(tester);
+  });
 }

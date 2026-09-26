@@ -10,6 +10,7 @@ import '../../../../core/addons/data/addon_repository.dart';
 import '../../../../core/addons/data/debrid_service.dart';
 import '../../../../core/addons/models/addon_manifest.dart';
 import '../../../../shared/widgets/text_input_dialog.dart';
+import '../../../../shared/focus/app_focus.dart';
 
 /// One-tap starter add-ons: catalogs, streams and subtitles, so a fresh
 /// install can be useful in three taps.
@@ -70,8 +71,7 @@ const List<AddonPreset> kAddonPresets = [
   AddonPreset(
     name: 'Streaming Catalogs',
     description: 'Netflix, Disney+, HBO… catalogs (browse only, no streams)',
-    url:
-        'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/manifest.json',
+    url: 'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/manifest.json',
     icon: Icons.grid_view_rounded,
   ),
 ];
@@ -1140,7 +1140,7 @@ class _DpadDialogButton extends StatelessWidget {
       onSelect: onPressed,
       child: const SizedBox.shrink(),
       builder: (context, state, _) {
-        final isFocused = state.focused;
+        final isFocused = showFocusIndicator(context, state.focused);
         return AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           decoration: BoxDecoration(

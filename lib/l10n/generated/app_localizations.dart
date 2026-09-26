@@ -699,6 +699,18 @@ abstract class AppLocalizations {
   /// **'Press the Search key or Enter to start'**
   String get pressSearchOrEnter;
 
+  /// Header above the list of the user's previously submitted search queries.
+  ///
+  /// In en, this message translates to:
+  /// **'Recent searches'**
+  String get recentSearches;
+
+  /// Tooltip and screen-reader label for the button that deletes one recent search.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove {query} from search history'**
+  String removeFromSearchHistory(String query);
+
   /// No description provided for @noResultsFound.
   ///
   /// In en, this message translates to:
@@ -1773,6 +1785,18 @@ abstract class AppLocalizations {
   /// **'Volume'**
   String get volume;
 
+  /// Tooltip on the minus button of the player's speed and volume dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Decrease'**
+  String get decrease;
+
+  /// Tooltip on the plus button of the player's speed and volume dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Increase'**
+  String get increase;
+
   /// No description provided for @brightness.
   ///
   /// In en, this message translates to:
@@ -2012,6 +2036,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Next'**
   String get next;
+
+  /// Tooltip on the player control that plays the episode before this one.
+  ///
+  /// In en, this message translates to:
+  /// **'Previous'**
+  String get previous;
 
   /// No description provided for @pip.
   ///
@@ -3122,6 +3152,90 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Select network buffer'**
   String get selectNetworkBuffer;
+
+  /// Startup screen status while the plugin is still being asked for this title's links. {plugin} is the plugin's name, a proper noun.
+  ///
+  /// In en, this message translates to:
+  /// **'Getting links from {plugin}…'**
+  String playerGettingLinks(String plugin);
+
+  /// Status on one row of the source list: its reachability check is running.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking…'**
+  String get playerSourceChecking;
+
+  /// Status on the row of the source list the player is opening right now, before its first picture.
+  ///
+  /// In en, this message translates to:
+  /// **'Opening…'**
+  String get playerSourceOpening;
+
+  /// Reachability column of the source list, for a link nobody has checked: the check only looks at the top few links, and cannot look at torrents or local files at all. Deliberately not 'Unknown', which reads as a verdict that something is wrong.
+  ///
+  /// In en, this message translates to:
+  /// **'Not checked'**
+  String get playerSourceNotChecked;
+
+  /// Why one source gave up: it was opened without having been checked, the reachability check then got no answer from it, and the player went back to a source the check had vouched for. Matches the row's "Unknown": no answer is not proof the link is dead. A lowercase fragment, like the other playerReason strings: shown after the source's name.
+  ///
+  /// In en, this message translates to:
+  /// **'no answer from the link'**
+  String get playerReasonNoAnswer;
+
+  /// Status on a row of the source list for a link that was opened and would not play, or stopped playing. It may still be reachable - the reachability column says so separately.
+  ///
+  /// In en, this message translates to:
+  /// **'Unplayable'**
+  String get playerSourceUnplayable;
+
+  /// Title of the Nuvio source card on a TMDB details screen. Sits beside the 'Available sources' card, which is the SkyStream plugin system; the two are peers. 'Nuvio' is the name of the third-party scraper project and is never translated.
+  ///
+  /// In en, this message translates to:
+  /// **'Nuvio plugins'**
+  String get nuvioPlugins;
+
+  /// Action inside the Nuvio card on a MOVIE, which opens the sources sheet and starts the scrapers.
+  ///
+  /// In en, this message translates to:
+  /// **'Search for streams'**
+  String get nuvioSearchForStreams;
+
+  /// Action inside the Nuvio card on a SERIES. A series needs a season and an episode before there is anything to scrape, so this opens the episode picker rather than the sources sheet.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose an episode'**
+  String get nuvioChooseEpisode;
+
+  /// Pill in the Nuvio card header saying how many scrapers are switched on and supported on this platform. The card is hidden entirely when the count would be zero, so the zero case never renders.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 scraper} other{{count} scrapers}}'**
+  String nuvioScraperCount(int count);
+
+  /// Title of the Stremio source card on an add-on details screen. Sits in the same place, and is drawn the same way, as the Nuvio card on a TMDB details screen. 'Stremio' is the name of the third-party add-on ecosystem and is never translated.
+  ///
+  /// In en, this message translates to:
+  /// **'Stremio add-ons'**
+  String get stremioAddons;
+
+  /// Action inside the Stremio card on a MOVIE, which opens the sources sheet and asks every installed stream add-on.
+  ///
+  /// In en, this message translates to:
+  /// **'Search Stremio add-ons'**
+  String get stremioSearchAddons;
+
+  /// Action inside the Stremio card on a SERIES. The card is a shortcut to one episode - the first of the selected season - and names it, because the episode list further down the page is how any other episode is reached. Replaced 'Play S1 E1', which claimed the tap would start playback when it opens a list of links.
+  ///
+  /// In en, this message translates to:
+  /// **'Search add-ons: S{season} E{episode}'**
+  String stremioSearchAddonsForEpisode(int season, int episode);
+
+  /// Pill in the Stremio card header saying how many installed add-ons can answer a stream request. Catalog-only add-ons are not counted, and the card is hidden entirely when the count would be zero, so the zero case never renders.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 add-on} other{{count} add-ons}}'**
+  String stremioAddonCount(int count);
 }
 
 class _AppLocalizationsDelegate

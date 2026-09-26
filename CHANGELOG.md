@@ -1,12 +1,24 @@
-# Changelogs - Unreleased
+# Changelogs - v2.8.0
 
 ### ✨ *New Features & Enhancements*
 
-#### 🆕 Cross-Plugin "Stream" Tab
-- New **Stream** navigation destination next to Library (desktop/TV sidebar and mobile bottom bar), backed by TMDB (trending movies + popular TV shows).
-- Opening a movie or TV episode aggregates streaming links from **all installed plugins** into a single source picker. Titles are matched strictly by TMDB/IMDb ID, falling back to normalized title + media type + year — plugins that don't have the title contribute no links.
-- Aggregated links are passed into the player; the in-player **Sources** panel lists every link and supports switching across plugins.
-- Each source shows the originating plugin name as a small label.
+#### 🧩 Plugins & Add-on Ecosystem (thanks to [Skywave22](https://github.com/Skywave22))
+- **Nuvio and streamio plugins support added thanks to [Skywave22](https://github.com/Skywave22)** – Integrated full support for Nuvio scraper plugins (running inside isolated JS workers with Cheerio and DOM polyfills) and Stremio add-ons (manifests, catalog browsing, streams, Cinemeta metadata, and OpenSubtitles v3).
+
+#### 🎬 Media Player & Playback Engine
+- **Changed player engine to libVLC** – Migrated the core playback engine to libVLC across desktop, mobile, and TV for broader codec compatibility, lower latency, and rock-solid playback stability.
+- **Completely reworked the player controls** – Rebuilt the video player controls from scratch with interactive seek bar scrubbing, intro/outro skipping, next episode countdown, audio & subtitle track management, and robust background playback handling.
+
+#### ⚡ Core Engines (Torrent & JavaScript)
+- **Upgraded Torrent Engine** – Rebuilt and upgraded the embedded TorrServer across all platforms (Android, iOS, macOS, Windows, Linux) with auth token security, stripped binary sizes, and optimized torrent streaming reliability.
+- **Upgraded JavaScript Engine** – Updated the embedded JS runtime to QuickJS-NG v0.17.0 with modern ECMAScript features (`Array.fromAsync`, iterator helpers), native AES decryption offloading, improved worker isolates, and enhanced polyfills for scraper plugins.
+
+#### 📺 TV & Navigation Experience
+- **TV navigation fixed** – Fully overhauled TV D-pad and gamepad focus traversal across player controls, source sheets, episode picker, catalog lists, and search views.
+
+#### 🎨 Appearance & Window
+- **Dark mode is default now** – Dark theme is now the default appearance across all devices (System and Light modes remain available under Settings › Appearance).
+- **Full screen mode is persistent between sessions** – Leaving the app in full screen mode brings it back that way on subsequent launches, replacing the deprecated `--full-screen` launch flag.
 
 #### ⬇️ Downloads
 - **Download location** setting with a native folder picker; the chosen path is used when saving and locating files.
@@ -15,33 +27,18 @@
 - **Pause all** and **Resume all** controls in the Downloads tab.
 - Multi-**select** mode (long-press / checklist) with **Delete selected**, alongside the existing per-item pause/resume/delete.
 
----
-
-# Changelogs - v2.7.6
-
-### ✨ *New Features & Enhancements*
-
-#### 🎬 Media Player & Subtitle Enhancements (PR #75 by @arranoust & PR #81 by @likhithkrishna1103)
-- **Player Control Toggles** – Added customizable visibility toggles for player control buttons in player settings.
-- **Cache Management** – Added dedicated setting to clear image and video cache.
-- **Hotstar-Style Subtitles** – Replaced custom subtitle view with configurable Hotstar-style subtitle rendering and improved subtitle parsing robustness.
-
-#### 📱 iOS Experience & Download Management (PR #84 by @Fares669)
-- **iOS Live Activity & Background Downloads** – Integrated Live Activity for active downloads and iOS background task processing to ensure download tasks continue reliably when the app is backgrounded.
-- **Detailed Download Progress** – Real-time download percentage and transferred file size indicators with improved label positioning.
-
-#### 📑 Episode Selection & Watch History (PR #84 by @Fares669)
-- **Multi-Episode Selection & Watched States** – Easily select multiple episodes to batch-mark as watched or unwatched.
-- **Offline Watch History Sync** – Automatically sync playback of downloaded offline episodes with your episode watch history.
-- **Improved Action Bar** – Replaced episode selection SnackBar with a dedicated bottom action bar and compact buttons.
-- **Quick Copy Title** – Long press on any media title to quickly copy it to clipboard.
-
-#### ⚙️ Poster Customization & Extension Settings (PR #74 by @arranoust & PR #84 by @Fares669)
-- **Poster Title Positioning** – Added customizable title placement options (top, bottom, overlay) for multimedia poster cards.
-- **Redesigned Extension Settings** – New dedicated plugin settings screen supporting conditional and script-defined plugin parameters, dynamic loading, and improved runtime cache handling.
-
+#### 🌐 Localization (i18n)
+- **New Locales Added** – Added Azerbaijani (`az`) (PR #100 by @jamalkamaladdin) and Finnish (`fi`) subtitle support (PR #93 by @TheBig8).
+- **Translation Updates** – Completed missing localized strings across 41 supported languages.
+- 
 ---
 
 ### 🐞 *Bug Fixes & System Stability*
-- 🛠️ Fixed SnackBar contrast and theme colors across settings and download screens.
-- 🛠️ Fixed extension settings runtime cache handling and plugin provider initialization.
+- 🛠️ **Fixed: SkyStream no longer resets monitor's brightness on Windows** – The bundled screen-brightness plugin was sending DDC/CI commands to external monitors. The plugin is now excluded from Windows builds entirely.
+- 🛠️ **Cloudflare Reliability on Windows** – WebView2 now keeps its working files inside the user AppData directory on installed builds; fixed solve slot deadlock and preserved real error responses.
+- 🛠️ **Player Audio & Disposal Lifecycle** – Fixed audio continuing to play after closing the player screen; guarded against memory leaks and state exceptions during player disposal.
+- 🛠️ **C++17 Upgrade & Platform Builds** – Upgraded native plugins and build scripts to C++17.
+
+
+### ⚙️ Improvements
+- 🚀 Various performance improvements and optimizations across the app  

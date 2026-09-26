@@ -8,6 +8,7 @@ import 'package:skystream/core/providers/device_info_provider.dart';
 import 'package:skystream/core/storage/history_repository.dart';
 import 'package:skystream/core/storage/storage_service.dart';
 import 'package:skystream/features/player/presentation/vlc/vlc_player_controls.dart';
+import 'package:skystream/features/player/presentation/vlc/player_slider_dialog.dart';
 import 'package:skystream/features/player/presentation/vlc/vlc_player_screen.dart';
 import 'package:skystream/features/settings/presentation/player_settings_provider.dart';
 import 'package:skystream/features/tracking/data/sync_manager.dart';
@@ -297,19 +298,10 @@ void main() {
         await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 50));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
-        await tester.scrollUntilVisible(
-          find.text('$volume%'),
-          80,
-          scrollable: find.descendant(
-            of: find.byType(BottomSheet),
-            matching: find.byType(Scrollable),
-          ),
+        final slider = tester.widget<PlayerSliderDialog>(
+          find.byType(PlayerSliderDialog),
         );
-        final selected = tester
-            .widgetList<ListTile>(find.byType(ListTile))
-            .where((tile) => tile.selected)
-            .single;
-        expect((selected.title! as Text).data, '$volume%');
+        expect(slider.value, volume.toDouble());
         expect(
           engineCalls.where((call) => call.method == 'setVolume'),
           isEmpty,

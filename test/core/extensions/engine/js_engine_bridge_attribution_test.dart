@@ -13,6 +13,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:skystream/core/extensions/engine/js_bytecode_compiler.dart';
 import 'package:skystream/core/extensions/engine/js_engine.dart';
 import 'package:skystream/core/extensions/engine/js_engine_worker.dart';
 import 'package:skystream/core/extensions/providers/js_based_provider.dart';
@@ -594,6 +595,12 @@ void main() {
 
     tearDown(() async {
       live.dispose();
+      // Bytecode compilation is fired and forgotten by JsBasedProvider, so on
+      // a platform where it actually runs (Linux and Windows CI; not macOS,
+      // where JsBytecodeCompiler.supported is false) the write outlives the
+      // test and lands after the delete below, logging a PathNotFoundException
+      // for a .qbc nobody was waiting on.
+      await JsBytecodeCompiler.settle();
       if (dir.existsSync()) await dir.delete(recursive: true);
     });
 
@@ -708,6 +715,51 @@ void main() {
             'passed as an argument',
       );
     });
+
+    // Upgrading QuickJS changes its bytecode format, and the .qbc cache is
+    // keyed on the wrapper text and the script's mtime - nothing that moves
+    // when the engine does. Every cached file is then unreadable, and before
+    // this fallback a plugin died on it: "CRITICAL - Eval failed ... invalid
+    // version (19 expected=28)", observed on a device after the v0.9.0 ->
+    // v0.17.0 sync. One slow load is the correct cost; a dead plugin is not.
+    test('a .qbc the engine cannot read falls back to source, and is deleted',
+        () async {
+      final port = ReceivePort();
+      final staleEngine = _StaleBytecodeEngine(repo, port.sendPort);
+      addTearDown(() {
+        staleEngine.dispose();
+        port.close();
+      });
+
+      final js = File('${dir.path}/stale.js')
+        ..writeAsStringSync('function getSettings() { return []; }');
+      final provider = JsBasedProvider(
+        staleEngine,
+        js.path,
+        packageName: 'com.a',
+        namespace: 'com_a__sub1',
+      );
+
+      // Fresh by mtime, unreadable by content - what an engine upgrade leaves.
+      final qbc = File(provider.bytecodePath!)
+        ..writeAsBytesSync(Uint8List.fromList(<int>[0, 1, 2, 3]));
+      await qbc.setLastModified(DateTime.now().add(const Duration(minutes: 1)));
+
+      await provider.waitForInit;
+
+      expect(
+        staleEngine.evals.map((e) => e.kind).toList(),
+        <String>['bytes', 'script', 'script'],
+        reason: 'the failed bytecode load must be followed by the text path '
+            'and then the token install, not abandoned',
+      );
+      expect(
+        qbc.existsSync(),
+        isFalse,
+        reason: 'the unusable cache must be removed so the next launch '
+            'recompiles instead of failing again',
+      );
+    });
   });
 
   // Every installed plugin evals into one QuickJS realm, so `sendMessage`,
@@ -729,6 +781,12 @@ void main() {
 
     tearDown(() async {
       live.dispose();
+      // Bytecode compilation is fired and forgotten by JsBasedProvider, so on
+      // a platform where it actually runs (Linux and Windows CI; not macOS,
+      // where JsBytecodeCompiler.supported is false) the write outlives the
+      // test and lands after the delete below, logging a PathNotFoundException
+      // for a .qbc nobody was waiting on.
+      await JsBytecodeCompiler.settle();
       if (dir.existsSync()) await dir.delete(recursive: true);
     });
 
@@ -998,6 +1056,18 @@ class _RecordingEngine extends JsEngineService {
   @override
   Future<void> loadBytes(Uint8List bytecode, {String? tag}) async {
     evals.add(_Eval('bytes', ''));
+  }
+}
+
+/// A [_RecordingEngine] whose bytecode load fails exactly as QuickJS does when
+/// the cached `.qbc` was written by a different engine version.
+class _StaleBytecodeEngine extends _RecordingEngine {
+  _StaleBytecodeEngine(super.repo, super.port);
+
+  @override
+  Future<void> loadBytes(Uint8List bytecode, {String? tag}) async {
+    evals.add(_Eval('bytes', ''));
+    throw Exception('JS Eval Error: SyntaxError: invalid version (19 expected=28)');
   }
 }
 

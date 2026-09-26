@@ -23,6 +23,9 @@ import 'package:skystream/features/player/presentation/vlc/panel/player_tracks_t
 import 'package:skystream/l10n/generated/app_localizations.dart';
 
 import 'fake_vlc_engine.dart';
+import 'package:skystream/features/player/domain/network_buffer.dart';
+import 'package:skystream/features/settings/presentation/player_settings_provider.dart';
+
 import 'vlc_screen_harness.dart';
 
 /// The panel as the screen drives it: the bottom bar opens the tab it names,
@@ -326,7 +329,12 @@ void main() {
       // losing probes keep running for seconds behind it.
       final held = Completer<void>();
       final client = MockClient((request) async {
-        if (request.url.path.contains('alpha')) return http.Response('', 200);
+        // Alpha, and the next episode's own two, answer at once.
+        for (final instant in const <String>['alpha', 'delta', 'epsilon']) {
+          if (request.url.path.contains(instant)) {
+            return http.Response('', 200);
+          }
+        }
         await held.future;
         // A HEAD that answers 4xx sends the probe on to a one-byte ranged
         // GET, and refusing that is how a dead candidate reads on the wire.
@@ -335,14 +343,28 @@ void main() {
       });
 
       await http.runWithClient(() async {
-        final downloads = await pumpShow(tester, episodeOne: probedStreams);
+        // The next episode's sources are real links, not bare paths: a path
+        // is a local file the probe cannot look at, so its row would say
+        // Unknown whatever a stray probe claimed - and prove nothing here.
+        final downloads = await pumpShow(
+          tester,
+          episodeOne: probedStreams,
+          episodeTwo: probedNextStreams,
+        );
         await sendFirstFrame(tester);
         final l10n = await english();
+        // The panel's own chips. The startup view behind it lists the same
+        // sources while the next episode opens, with its own wording for the
+        // row being opened.
+        Finder inPanel(String text) => find.descendant(
+          of: find.byType(PlayerSourcesTab),
+          matching: find.text(text),
+        );
 
         await openFromBar(tester, l10n.sources);
         expect(sourceRows(tester), <String>['Alpha', 'Beta', 'Gamma']);
         expect(
-          find.text(l10n.trying),
+          find.text(l10n.playerSourceChecking),
           findsNWidgets(2),
           reason: 'Beta and Gamma are still being probed, which is the point',
         );
@@ -358,7 +380,7 @@ void main() {
         downloads().gate.complete();
         await settle(tester);
         expect(sourceRows(tester), <String>['Delta', 'Epsilon']);
-        expect(find.text(l10n.playerSourceReachable), findsNWidgets(2));
+        expect(inPanel(l10n.playerSourceReachable), findsNWidgets(2));
 
         // Now the finished episode's probes answer. They are keyed by index
         // into a list that is not on screen any more.
@@ -366,15 +388,15 @@ void main() {
         await settle(tester);
 
         expect(
-          find.text(l10n.failed),
+          find.text(l10n.unknown),
           findsNothing,
           reason:
               'a probe belongs to the resolve that asked for it. Index 1 of '
               'the previous episode\'s candidates is not index 1 of this '
-              'one\'s, and painting it red says the new source is dead',
+              'one\'s, and marking it unreachable says the new source is dead',
         );
         expect(sourceRows(tester), <String>['Delta', 'Epsilon']);
-        expect(find.text(l10n.playerSourceReachable), findsNWidgets(2));
+        expect(inPanel(l10n.playerSourceReachable), findsNWidgets(2));
 
         await tester.pumpWidget(const SizedBox());
       }, () => client);
@@ -383,7 +405,7 @@ void main() {
 
   testWidgets(
     'the next episode\'s own candidates hold the Sources tab through its '
-    'probe, and a pick there is refused',
+    'probe, and a pick there plays that row',
     variant: texturePlatform,
     (tester) async {
       // The window that reaches both halves of the keep-previous rule: the
@@ -419,7 +441,14 @@ void main() {
               'stands from then on. Emptied here, the focused row would '
               'unmount and nothing in the panel would hold focus',
         );
-        expect(find.text(l10n.trying), findsNWidgets(2));
+        expect(
+          find.descendant(
+            of: find.byType(PlayerSourcesTab),
+            matching: find.text(l10n.playerSourceChecking),
+          ),
+          findsNWidgets(2),
+          reason: 'the panel, not the startup view behind it listing the same',
+        );
         expect(
           selectedRows(tester),
           isEmpty,
@@ -430,17 +459,17 @@ void main() {
         await tester.tap(find.widgetWithText(PanelRow, 'Epsilon'));
         await settle(tester);
 
+        // The list on screen is this resolve's own, so the row the viewer
+        // chose means what it says: the check ends on it rather than the
+        // press doing nothing until the probe decides for them.
         expect(
           engine.callsTo('setSource'),
-          hasLength(opened),
-          reason: 'there is nothing resolved to switch away from yet',
+          hasLength(opened + 1),
+          reason: 'a pick during the check ends it on that row',
         );
         expect(
-          find.text(l10n.loading),
-          findsOneWidget,
-          reason:
-              'the press closed the panel, so the screen behind it has to be '
-              'saying something about why nothing happened',
+          (engine.callsTo('setSource').last.arguments as Map)['uri'],
+          'https://cdn.test/epsilon.mkv',
         );
 
         // Let the resolve finish so no probe is left in flight.
@@ -449,6 +478,41 @@ void main() {
 
         await tester.pumpWidget(const SizedBox());
       }, () => client);
+    },
+  );
+
+  testWidgets(
+    'the torrent server gets the buffer the viewer chose, split to keep some '
+    'of it behind the playhead',
+    variant: texturePlatform,
+    (tester) async {
+      // One number for both engines. libVLC takes it as a prefetch window and
+      // TorrServer as its piece cache; the cache used to be a hard-coded
+      // 64 MB, so the setting moved one engine and not the other.
+      final torrents = _FakeTorrents();
+      await pumpPlayer(
+        tester,
+        settings: const PlayerSettings(networkBufferMb: 256),
+        overrides: [torrentServiceProvider.overrideWithValue(torrents)],
+      );
+      await sendFirstFrame(tester);
+
+      expect(torrents.cacheMb, 256, reason: 'the chosen size, not a constant');
+      expect(
+        torrents.readAheadPercent,
+        torrentReadAheadPercent(256),
+        reason: 'and the split that leaves a backward window behind it',
+      );
+      // The remainder is the only backward buffer this player has anywhere:
+      // libVLC 3's prefetch filter takes a size and decides the rest itself.
+      final behindMb = 256 * (100 - torrents.readAheadPercent!) / 100;
+      expect(
+        behindMb,
+        greaterThanOrEqualTo(8),
+        reason: 'enough for the ten second step the seek controls take',
+      );
+
+      await sendEvent(tester, snapshot(state: 'paused'));
     },
   );
 
@@ -528,6 +592,39 @@ void main() {
             'a hand-picked pack file may not be the episode the screen '
             'thinks is playing, so the search is scoped to the show rather '
             'than to an episode it cannot vouch for',
+      );
+
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  // A picture on screen is proof the check cannot beat: the source playing
+  // reads reachable even where the probe never looked, as with a local file.
+  testWidgets(
+    'the source on screen never says it was not checked',
+    variant: texturePlatform,
+    (tester) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: const <StreamResult>[
+          StreamResult(url: '/sources/alpha.mkv', source: 'Alpha'),
+          StreamResult(url: '/sources/beta.mkv', source: 'Beta'),
+        ],
+      );
+      await sendFirstFrame(tester);
+      final l10n = await english();
+      await openFromBar(tester, l10n.sources);
+
+      Finder chipIn(String row, String text) => find.descendant(
+        of: find.ancestor(of: find.text(row), matching: find.byType(PanelRow)),
+        matching: find.text(text),
+      );
+      expect(chipIn('Alpha', l10n.playerSourceReachable), findsOneWidget);
+      expect(chipIn('Alpha', l10n.playerSourceNotChecked), findsNothing);
+      expect(
+        chipIn('Beta', l10n.playerSourceNotChecked),
+        findsOneWidget,
+        reason: 'a local file nobody has played is still not checked',
       );
 
       await tester.pumpWidget(const SizedBox());
@@ -831,6 +928,20 @@ class _FakeExtensions extends ExtensionManager {
 /// Implemented rather than extended: the real service is a singleton with a
 /// private constructor, and standing one up would start a real server.
 class _FakeTorrents implements TorrentService {
+  /// What the player asked the server to hold, so a test can check that the
+  /// viewer's buffer setting reaches both engines rather than just libVLC.
+  int? cacheMb;
+  int? readAheadPercent;
+
+  @override
+  Future<void> applyBufferSettings({
+    required int cacheMb,
+    required int readAheadPercent,
+  }) async {
+    this.cacheMb = cacheMb;
+    this.readAheadPercent = readAheadPercent;
+  }
+
   @override
   Future<TorrentStatus?> getCurrentStatus() async =>
       TorrentStatus.fromMap(<dynamic, dynamic>{

@@ -1,20 +1,27 @@
 import 'dart:async';
 import 'dart:io';
+
 import 'package:flutter_displaymode/flutter_displaymode.dart';
 import 'package:flutter/material.dart';
-import 'features/player/presentation/player_debug_flags.dart' show kPlayerRepaintRainbow;
+
+import 'features/player/presentation/player_debug_flags.dart'
+    show kPlayerRepaintRainbow;
+
 import 'package:flutter/rendering.dart' show debugRepaintRainbowEnabled;
 import 'package:flutter/services.dart'; // LogicalKeyboardKey, KeyDownEvent
 import 'package:flutter/foundation.dart'; // For kReleaseMode
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:window_manager/window_manager.dart';
+
 import 'core/theme/theme_provider.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/app_theme.dart';
 import 'core/storage/storage_service.dart';
 import 'core/network/doh_service.dart';
 import 'core/network/apple_http_transport.dart';
+
 import 'package:dynamic_color/dynamic_color.dart';
+
 import 'core/utils/app_utils.dart';
 import 'features/extensions/providers/extensions_controller.dart';
 import 'features/extensions/widgets/extensions_sync_bridge.dart';
@@ -23,35 +30,31 @@ import 'core/widgets/update_dialog.dart';
 import 'core/widgets/app_error_boundary.dart';
 import 'core/services/download_service.dart';
 import 'core/services/notification_service.dart';
+
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:skystream/l10n/generated/app_localizations.dart';
+
 import 'core/providers/locale_provider.dart';
 import 'core/network/cloudflare_bypass.dart';
 import 'core/config/tmdb_config.dart';
+import 'core/providers/bootstrap_provider.dart' show quietDesktopBrightness;
 import 'core/providers/device_info_provider.dart';
+import 'shared/focus/app_focus.dart';
 import 'shared/widgets/loading_indicator.dart';
+import 'shared/widgets/tv_logical_scale.dart';
 import 'core/widgets/m3_toast_overlay.dart';
 import 'features/settings/presentation/general_settings_provider.dart';
 import 'features/settings/presentation/full_screen_mode_provider.dart';
 import 'features/player/presentation/player_platform_service.dart'
     show immersiveRouteActive;
 
-/// The process's launch arguments, kept for the one consumer that needs them.
-///
-/// `main` is the only place they exist, and the provider that reads them
-/// (`fullScreenModeProvider`) cannot be touched until a [ProviderScope] is
-/// mounted - so they are parked here and applied from [_MyAppState.initState].
-/// Empty on mobile, where the platform never passes any.
-List<String> appLaunchArgs = const <String>[];
-
-void main(List<String> args) async {
+void main() async {
   // First statement in the process: a framework or async error raised while
   // the rest of this function runs has nowhere else to go. Installs
   // FlutterError.onError, PlatformDispatcher.onError and ErrorWidget.builder -
   // see lib/core/widgets/app_error_boundary.dart.
   installGlobalErrorHandlers();
 
-  appLaunchArgs = args;
   WidgetsFlutterBinding.ensureInitialized();
   if (Platform.isIOS || Platform.isMacOS) configureAppleImageCache();
 
@@ -81,8 +84,7 @@ void main(List<String> args) async {
       size: const Size(1280, 720),
       minimumSize: const Size(360, 640),
       center: true,
-      backgroundColor: Colors
-          .black, // Solid black prevents transparency during fullscreen transition
+      backgroundColor: Colors.black, // Solid black prevents transparency during fullscreen transition
       skipTaskbar: false,
       titleBarStyle: Platform.isMacOS
           ? TitleBarStyle.normal
@@ -135,6 +137,16 @@ class _AppRootState extends State<AppRoot> {
       if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
         final alwaysOnTop = _storageService.isAlwaysOnTop();
         await windowManager.setAlwaysOnTop(alwaysOnTop);
+        // Stops screen_brightness issuing DDC/CI to the monitor on desktop.
+        // Here rather than in Bootstrap: bootstrapProvider is never read by
+        // anything, so Bootstrap.build() does not run in the shipped app and
+        // this is the init path that does.
+        //
+        // Deliberately not awaited. Nothing below depends on it, it swallows
+        // its own failures, and awaiting would put a plugin round-trip on the
+        // launch critical path - a channel call that never returns would be an
+        // app that never paints. Fire it and move on.
+        unawaited(quietDesktopBrightness());
       }
 
       if (mounted) {
@@ -207,12 +219,10 @@ class _MyAppState extends ConsumerState<MyApp> {
   void initState() {
     super.initState();
     FocusManager.instance.addEarlyKeyEventHandler(_handleEarlyKeyEvent);
-    // `--full-screen`, and the retired aliases beside it in
-    // [kFullScreenModeLaunchArgs], ask for the ten-foot layout on a desktop
-    // wired to a television. Applied here rather than in `main` because it
-    // writes through a provider, which needs the scope this widget sits
-    // inside.
-    ref.read(fullScreenModeProvider.notifier).initialize(appLaunchArgs);
+    // Brings back the ten-foot layout if the last session was left in it.
+    // Applied here rather than in `main` because it reads through a provider,
+    // which needs the scope this widget sits inside.
+    ref.read(fullScreenModeProvider.notifier).initialize();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(downloadServiceProvider).init();
       unawaited(_loadInstalledExtensions());
@@ -228,8 +238,7 @@ class _MyAppState extends ConsumerState<MyApp> {
   }
 
   KeyEventResult _handleEarlyKeyEvent(KeyEvent event) {
-    if (event is KeyDownEvent &&
-        event.logicalKey == LogicalKeyboardKey.f11) {
+    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.f11) {
       _toggleFullscreen();
       return KeyEventResult.handled;
     }
@@ -441,21 +450,22 @@ class _MyAppState extends ConsumerState<MyApp> {
           ],
           supportedLocales: AppLocalizations.supportedLocales,
           builder: (context, child) {
-            final mq = MediaQuery.of(context);
             Widget result = child!;
 
-            // Phase 1: Density override for TV devices
-            // Android TV often reports inflated pixel density; we clamp to 1.0 for standard scaling.
+            // A television reports about 960 dp of width whatever its panel
+            // is, so the same layout that breathes on a laptop is drawn at
+            // twice the relative size on a set. [TvLogicalScale] hands the
+            // tree more logical pixels and scales the result back up to fill
+            // the screen; it steps aside on the player, whose video is a
+            // platform view and has to be laid out at the panel's own
+            // resolution. See that file for what this replaced and why the
+            // old `devicePixelRatio: 1.0` never did it.
             final profile = profileAsync.asData?.value;
-            if (profile?.isTv == true) {
-              result = MediaQuery(
-                data: mq.copyWith(
-                  devicePixelRatio: 1.0,
-                  textScaler: TextScaler.noScaling,
-                ),
-                child: result,
-              );
-            }
+            result = TvLogicalScale(
+              enabled: profile?.isTv == true,
+              router: appRouter,
+              child: result,
+            );
 
             if (!kIsWeb &&
                 (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
@@ -480,7 +490,13 @@ class _MyAppState extends ConsumerState<MyApp> {
             // router to know it, so they sit together here - inside
             // `MaterialApp.router`'s builder, i.e. around the Navigator that
             // builds the player route.
-            return UpdatePromptHost(child: M3ToastOverlay(child: result));
+            result = UpdatePromptHost(child: M3ToastOverlay(child: result));
+
+            // Outermost, so every focus indicator in the app - the browsing
+            // UI, the player chrome, dialogs and the toast host alike - reads
+            // one answer to "is anyone driving this with a remote or a
+            // keyboard right now". See `shared/focus/app_focus.dart`.
+            return FocusVisibilityScope(child: result);
           },
         );
 
@@ -944,9 +960,7 @@ class _CustomTitleBarState extends State<CustomTitleBar> with WindowListener {
                                                 decoration: BoxDecoration(
                                                   color: isDark
                                                       ? const Color(0xFF050505)
-                                                      : const Color(
-                                                          0xFFFAF8F5,
-                                                        ), // overlap box bg matches titlebar
+                                                      : const Color(0xFFFAF8F5), // overlap box bg matches titlebar
                                                   border: Border.all(
                                                     color: iconColor,
                                                     width: 1.2,

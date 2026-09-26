@@ -29,6 +29,14 @@ class SettingsRepository {
     return _storageService.getSidebarExpanded();
   }
 
+  Future<void> setFullScreenMode(bool enabled) async {
+    await _storageService.setFullScreenMode(enabled);
+  }
+
+  bool? getFullScreenMode() {
+    return _storageService.getFullScreenMode();
+  }
+
   Future<void> setDefaultHomeScreen(String path) async {
     await _storageService.setDefaultHomeScreen(path);
   }
@@ -114,6 +122,14 @@ class SettingsRepository {
 
   bool isWatchHistoryEnabled() {
     return _storageService.isWatchHistoryEnabled();
+  }
+
+  Future<void> setSearchHistory(List<String> queries) async {
+    await _storageService.setSearchHistory(queries);
+  }
+
+  List<String> getSearchHistory() {
+    return _storageService.getSearchHistory();
   }
 
   Future<void> setAlwaysOnTop(bool enabled) async {

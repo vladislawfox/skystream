@@ -14,6 +14,7 @@ import '../../../shared/widgets/custom_widgets.dart';
 import '../../../shared/widgets/loading_indicator.dart';
 import '../../../shared/widgets/text_input_dialog.dart';
 import 'nuvio_scraper_settings_dialog.dart';
+import '../../../shared/focus/app_focus.dart';
 
 /// Manage Nuvio-format plugin repositories.
 class NuvioPluginsView extends ConsumerStatefulWidget {
@@ -96,245 +97,257 @@ class _NuvioPluginsViewState extends ConsumerState<NuvioPluginsView> {
         ),
         addAutomaticKeepAlives: false,
         children: [
-        _FocusableCard(
-          margin: const EdgeInsets.symmetric(
-            horizontal: LayoutConstants.spacingMd,
-            vertical: LayoutConstants.spacingXs,
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(LayoutConstants.spacingMd),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 40,
-                      height: 40,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: cs.primaryContainer.withValues(alpha: 0.5),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Icon(
-                        Icons.extension_outlined,
-                        color: cs.primary,
-                        size: 22,
-                      ),
-                    ),
-                    const SizedBox(width: LayoutConstants.spacingSm),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Nuvio Scrapers',
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: cs.primary,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            'JS scrapers feed the Explore sources sheet alongside SkyStream plugins.',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: cs.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: LayoutConstants.spacingXs),
-                    CustomSwitch(
-                      value: state.enabled,
-                      onChanged: (value) => unawaited(
-                        ref
-                            .read(nuvioRepositoryProvider.notifier)
-                            .setEnabled(value),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: LayoutConstants.spacingMd),
-                Wrap(
-                  spacing: LayoutConstants.spacingSm,
-                  runSpacing: LayoutConstants.spacingXs,
-                  children: [
-                    CustomButton(
-                      isPrimary: true,
-                      onPressed: _busy
-                          ? null
-                          : () => unawaited(_addRepository()),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (_busy) ...[
-                            const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: AppLoadingIndicator(
-                                constraints: BoxConstraints(
-                                  maxWidth: 16,
-                                  maxHeight: 16,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                          ] else ...[
-                            const Icon(Icons.add_circle_outline, size: 18),
-                            const SizedBox(width: 8),
-                          ],
-                          const Text('Add Repository'),
-                        ],
-                      ),
-                    ),
-                    if (state.repos.isNotEmpty)
-                      CustomButton(
-                        isOutlined: true,
-                        onPressed: _checking
-                            ? null
-                            : () => unawaited(_checkForUpdates()),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (_checking) ...[
-                              const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: AppLoadingIndicator(
-                                  constraints: BoxConstraints(
-                                    maxWidth: 16,
-                                    maxHeight: 16,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                            ] else ...[
-                              const Icon(Icons.refresh_rounded, size: 18),
-                              const SizedBox(width: 8),
-                            ],
-                            Text(_checking ? 'Checking…' : 'Check Updates'),
-                          ],
-                        ),
-                      ),
-                  ],
-                ),
-                if (state.repos.isNotEmpty) ...[
-                  const SizedBox(height: LayoutConstants.spacingSm),
-                  Divider(
-                    height: 1,
-                    color: theme.dividerColor.withValues(alpha: 0.5),
-                  ),
-                  const SizedBox(height: LayoutConstants.spacingXs),
+          _FocusableCard(
+            margin: const EdgeInsets.symmetric(
+              horizontal: LayoutConstants.spacingMd,
+              vertical: LayoutConstants.spacingXs,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(LayoutConstants.spacingMd),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Row(
                     children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: cs.primaryContainer.withValues(alpha: 0.5),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(
+                          Icons.extension_outlined,
+                          color: cs.primary,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: LayoutConstants.spacingSm),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Auto-update scrapers on launch',
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                fontWeight: FontWeight.w500,
+                              'Nuvio Scrapers',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: cs.primary,
                               ),
                             ),
+                            const SizedBox(height: 2),
                             Text(
-                              'Checks each repository (max once every ${NuvioRepository.autoUpdateInterval.inHours}h).',
-                              style: theme.textTheme.labelSmall?.copyWith(
+                              'JS scrapers feed the Explore sources sheet alongside SkyStream plugins.',
+                              style: theme.textTheme.bodySmall?.copyWith(
                                 color: cs.onSurfaceVariant,
                               ),
                             ),
                           ],
                         ),
                       ),
+                      const SizedBox(width: LayoutConstants.spacingXs),
                       CustomSwitch(
-                        value: state.autoUpdate,
+                        value: state.enabled,
                         onChanged: (value) => unawaited(
                           ref
                               .read(nuvioRepositoryProvider.notifier)
-                              .setAutoUpdate(value),
+                              .setEnabled(value),
                         ),
                       ),
                     ],
                   ),
-                ],
-              ],
-            ),
-          ),
-        ),
-
-        const SizedBox(height: LayoutConstants.spacingSm),
-
-        if (state.isLoading && state.repos.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 40),
-            child: Center(child: AppLoadingIndicator()),
-          ),
-
-        if (!state.isLoading && state.repos.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: LayoutConstants.spacingMd,
-              vertical: LayoutConstants.spacingSm,
-            ),
-            child: _FocusableCard(
-              margin: EdgeInsets.zero,
-              child: Padding(
-                padding: const EdgeInsets.all(LayoutConstants.spacingLg),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.snippet_folder_outlined,
-                      size: 48,
-                      color: cs.primary,
+                  const SizedBox(height: LayoutConstants.spacingMd),
+                  // Full width, or the Wrap shrink-wraps to its two buttons
+                  // and `alignment: end` has nothing to align them within -
+                  // the group stays at the left and only its internal order
+                  // changes.
+                  SizedBox(
+                    width: double.infinity,
+                    child: Wrap(
+                      // Right-aligned, with the primary action furthest right.
+                      // Every run of the Wrap is aligned, so this still reads
+                      // correctly when the two buttons drop onto separate lines on
+                      // a narrow window.
+                      alignment: WrapAlignment.end,
+                      spacing: LayoutConstants.spacingSm,
+                      runSpacing: LayoutConstants.spacingXs,
+                      children: [
+                        if (state.repos.isNotEmpty)
+                          CustomButton(
+                            isOutlined: true,
+                            onPressed: _checking
+                                ? null
+                                : () => unawaited(_checkForUpdates()),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (_checking) ...[
+                                  const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: AppLoadingIndicator(
+                                      constraints: BoxConstraints(
+                                        maxWidth: 16,
+                                        maxHeight: 16,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                ] else ...[
+                                  const Icon(Icons.refresh_rounded, size: 18),
+                                  const SizedBox(width: 8),
+                                ],
+                                Text(_checking ? 'Checking…' : 'Check Updates'),
+                              ],
+                            ),
+                          ),
+                        CustomButton(
+                          isPrimary: true,
+                          onPressed: _busy
+                              ? null
+                              : () => unawaited(_addRepository()),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_busy) ...[
+                                const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: AppLoadingIndicator(
+                                    constraints: BoxConstraints(
+                                      maxWidth: 16,
+                                      maxHeight: 16,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                              ] else ...[
+                                const Icon(Icons.add_circle_outline, size: 18),
+                                const SizedBox(width: 8),
+                              ],
+                              const Text('Add Repository'),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: LayoutConstants.spacingMd),
-                    Text(
-                      'No Nuvio Repositories Yet',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
+                  ),
+                  if (state.repos.isNotEmpty) ...[
                     const SizedBox(height: LayoutConstants.spacingSm),
-                    Text(
-                      'Add a repository URL to load scrapers for stream extraction.',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: cs.onSurfaceVariant,
-                      ),
-                      textAlign: TextAlign.center,
+                    Divider(
+                      height: 1,
+                      color: theme.dividerColor.withValues(alpha: 0.5),
                     ),
-                    const SizedBox(height: LayoutConstants.spacingLg),
-                    CustomButton(
-                      isPrimary: true,
-                      onPressed: () => unawaited(_addRepository()),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.add_circle_outline, size: 18),
-                          SizedBox(width: 8),
-                          Text('Add Repository'),
-                        ],
-                      ),
+                    const SizedBox(height: LayoutConstants.spacingXs),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Auto-update scrapers on launch',
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              Text(
+                                'Checks each repository (max once every ${NuvioRepository.autoUpdateInterval.inHours}h).',
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: cs.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        CustomSwitch(
+                          value: state.autoUpdate,
+                          onChanged: (value) => unawaited(
+                            ref
+                                .read(nuvioRepositoryProvider.notifier)
+                                .setAutoUpdate(value),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
-                ),
+                ],
               ),
             ),
           ),
 
-        for (final repo in state.repos)
-          Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: LayoutConstants.spacingMd,
-              vertical: LayoutConstants.spacingXs,
+          const SizedBox(height: LayoutConstants.spacingSm),
+
+          if (state.isLoading && state.repos.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 40),
+              child: Center(child: AppLoadingIndicator()),
             ),
-            child: _RepoCard(repo: repo),
-          ),
-      ],
-    ),
-  );
+
+          if (!state.isLoading && state.repos.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: LayoutConstants.spacingMd,
+                vertical: LayoutConstants.spacingSm,
+              ),
+              child: _FocusableCard(
+                margin: EdgeInsets.zero,
+                child: Padding(
+                  padding: const EdgeInsets.all(LayoutConstants.spacingLg),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.snippet_folder_outlined,
+                        size: 48,
+                        color: cs.primary,
+                      ),
+                      const SizedBox(height: LayoutConstants.spacingMd),
+                      Text(
+                        'No Nuvio Repositories Yet',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: LayoutConstants.spacingSm),
+                      Text(
+                        'Add a repository URL to load scrapers for stream extraction.',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: LayoutConstants.spacingLg),
+                      CustomButton(
+                        isPrimary: true,
+                        onPressed: () => unawaited(_addRepository()),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.add_circle_outline, size: 18),
+                            SizedBox(width: 8),
+                            Text('Add Repository'),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+          for (final repo in state.repos)
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: LayoutConstants.spacingMd,
+                vertical: LayoutConstants.spacingXs,
+              ),
+              child: _RepoCard(repo: repo),
+            ),
+        ],
+      ),
+    );
   }
 }
 
@@ -356,6 +369,15 @@ class _RepoCard extends ConsumerStatefulWidget {
 }
 
 class _RepoCardState extends ConsumerState<_RepoCard> {
+  /// Mirrors the tile's own expansion so [build] can draw the chevron.
+  ///
+  /// The tile's default trailing chevron is centred on the WHOLE title block -
+  /// title plus the scrapers/checked/updated line under it - while anything
+  /// put in `title` sits on the title's own line. The version badge was in
+  /// `title`, so it and the chevron were on two different centres. Moving the
+  /// badge into `trailing` puts them on one, which costs drawing the rotation
+  /// here because a custom `trailing` replaces the animated one.
+  bool _expanded = true;
   Future<void> _refresh() async {
     final messenger = ScaffoldMessenger.of(context);
     final summary = await ref
@@ -430,43 +452,50 @@ class _RepoCardState extends ConsumerState<_RepoCard> {
         shape: const Border(),
         collapsedShape: const Border(),
         initiallyExpanded: true,
+        onExpansionChanged: (value) => setState(() => _expanded = value),
         backgroundColor: Colors.transparent,
         collapsedBackgroundColor: Colors.transparent,
         tilePadding: const EdgeInsets.symmetric(
           horizontal: LayoutConstants.spacingMd,
           vertical: LayoutConstants.spacingXs,
         ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (manifest?.version != null)
+              _Badge(text: 'v${manifest!.version}', color: cs.primary),
+            if (repo.isRefreshing) ...[
+              const SizedBox(width: LayoutConstants.spacingXs),
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: AppLoadingIndicator(
+                  constraints: BoxConstraints(maxWidth: 14, maxHeight: 14),
+                ),
+              ),
+            ],
+            const SizedBox(width: LayoutConstants.spacingXs),
+            AnimatedRotation(
+              turns: _expanded ? 0.5 : 0,
+              duration: const Duration(milliseconds: 200),
+              child: Icon(
+                Icons.expand_more_rounded,
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    repo.displayName,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      color: cs.primary,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                if (manifest?.version != null) ...[
-                  const SizedBox(width: LayoutConstants.spacingXs),
-                  _Badge(text: 'v${manifest!.version}', color: cs.primary),
-                ],
-                if (repo.isRefreshing) ...[
-                  const SizedBox(width: LayoutConstants.spacingXs),
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: AppLoadingIndicator(
-                      constraints: BoxConstraints(maxWidth: 14, maxHeight: 14),
-                    ),
-                  ),
-                ],
-              ],
+            Text(
+              repo.displayName,
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: cs.primary,
+                fontWeight: FontWeight.bold,
+              ),
+              overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 2),
             Text(
@@ -877,6 +906,7 @@ class _TvIconButtonState extends State<_TvIconButton> {
     final cs = Theme.of(context).colorScheme;
     final primary = cs.primary;
     final enabled = widget.onPressed != null;
+    final showFocus = showFocusIndicator(context, _isFocused);
 
     return Focus(
       canRequestFocus: enabled,
@@ -895,27 +925,17 @@ class _TvIconButtonState extends State<_TvIconButton> {
       child: Tooltip(
         message: widget.tooltip,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
+          duration: AppFocus.duration,
           width: 38,
           height: 38,
           margin: const EdgeInsets.symmetric(horizontal: 2),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: _isFocused
-                ? (widget.color ?? primary).withValues(alpha: 0.2)
-                : Colors.transparent,
-            border: _isFocused
-                ? Border.all(color: widget.color ?? primary, width: 2)
-                : null,
-            boxShadow: _isFocused
-                ? [
-                    BoxShadow(
-                      color: (widget.color ?? primary).withValues(alpha: 0.5),
-                      blurRadius: 12,
-                      spreadRadius: 1,
-                    ),
-                  ]
-                : null,
+            // One neutral ring, and only when a focus indicator belongs on
+            // screen. The accent fill, accent border and 12 dp accent halo
+            // this replaces were three cues for one state.
+            color: AppFocus.rowTint(context, focused: showFocus),
+            border: AppFocus.border(context, focused: showFocus),
           ),
           child: Material(
             color: Colors.transparent,
@@ -928,7 +948,7 @@ class _TvIconButtonState extends State<_TvIconButton> {
                     Icon(
                       widget.icon,
                       size: 20,
-                      color: _isFocused
+                      color: showFocus
                           ? (widget.color ?? primary)
                           : (widget.color ?? cs.onSurfaceVariant),
                     ),
@@ -960,10 +980,8 @@ class _ScraperLogo extends StatelessWidget {
       ),
       child: Text(
         letter,
-        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-          color: cs.primary,
-          fontWeight: FontWeight.bold,
-        ),
+        style: Theme.of(context).textTheme.titleSmall
+            ?.copyWith(color: cs.primary, fontWeight: FontWeight.bold),
       ),
     );
 
@@ -1000,11 +1018,8 @@ class _Badge extends StatelessWidget {
       ),
       child: Text(
         text,
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-          color: color,
-          fontSize: 10,
-          fontWeight: FontWeight.w600,
-        ),
+        style: Theme.of(context).textTheme.labelSmall
+            ?.copyWith(color: color, fontSize: 10, fontWeight: FontWeight.w600),
       ),
     );
   }
@@ -1027,13 +1042,13 @@ class _RowFocusNotification extends Notification {
 /// single row and tells the enclosing [_FocusableCard] to stay quiet while it
 /// does. Two departures from how [CardsWrapper] applies the same recipe:
 ///
-/// The ring and tint are painted behind the child, not in front of it as
-/// [CardsWrapper] does; a row's child is text on a transparent [Material], so
-/// a foreground tint would wash out the label it points at.
+/// The ring is painted behind the child, not in front of it as [CardsWrapper]
+/// does; a row's child is text on a transparent [Material], so a foreground
+/// layer would sit over the label it points at.
 ///
-/// An opaque fill sits between the glow and the row, because Flutter paints a
-/// [BoxShadow] across the whole shape rather than just its rim, and without
-/// something opaque in the middle the glow floods the row.
+/// An opaque fill sits between the shadow and the row, because Flutter paints
+/// a [BoxShadow] across the whole shape rather than just its rim, and without
+/// something opaque in the middle it floods the row.
 class _FocusableRow extends StatefulWidget {
   final Widget child;
 
@@ -1072,8 +1087,7 @@ class _FocusableRowState extends State<_FocusableRow> {
         margin: const EdgeInsets.all(CardFocusAffordance.ringWidth),
         decoration: CardFocusAffordance.glow(
           borderRadius: _radius,
-          accent: colorScheme.primary,
-          focused: _isFocused,
+          focused: showFocusIndicator(context, _isFocused),
         ),
         child: DecoratedBox(
           decoration: BoxDecoration(
@@ -1084,9 +1098,9 @@ class _FocusableRowState extends State<_FocusableRow> {
           ),
           child: Container(
             decoration: CardFocusAffordance.ring(
+              context,
               borderRadius: _radius,
-              accent: colorScheme.primary,
-              focused: _isFocused,
+              focused: showFocusIndicator(context, _isFocused),
             ),
             // The row's own ink surface. A ListTile paints its splashes on the
             // nearest Material ancestor, and ink is painted before that

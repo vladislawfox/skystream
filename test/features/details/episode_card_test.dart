@@ -170,8 +170,8 @@ Future<_Harness> _pumpCards(
       ),
       downloadedFilesProvider.overrideWith(_FakeDownloadedFiles.new),
       downloadLauncherProvider.overrideWith(_RecordingLauncher.new),
-      detailsControllerProvider.overrideWith(
-        () => _FakeDetailsController(
+      detailsControllerProvider.overrideWith2(
+        (_) => _FakeDetailsController(
           DetailsState(details: AsyncValue.data(item), item: item),
         ),
       ),
@@ -211,9 +211,8 @@ Future<_Harness> _pumpCards(
         supportedLocales: AppLocalizations.supportedLocales,
         home: Builder(
           builder: (context) => MediaQuery(
-            data: MediaQuery.of(
-              context,
-            ).copyWith(navigationMode: navigationMode),
+            data: MediaQuery.of(context)
+                .copyWith(navigationMode: navigationMode),
             child: Directionality(
               textDirection: textDirection,
               child: Scaffold(
