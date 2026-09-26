@@ -22,6 +22,8 @@ class HlsDownloadManager {
 
   HlsDownloadManager({required this.downloader, required this.onUpdate});
 
+  bool canResume(String id) => _jobs.containsKey(id);
+
   static String packagePath(String playlistPath) {
     // Local HLS demuxers disagree on decoding %20. ASCII names keep every URI
     // portable while the episode's visible filename can contain spaces/Unicode.
@@ -43,34 +45,53 @@ class HlsDownloadManager {
     return next;
   }
 
-  Future<void> start(DownloadTask parent, HlsDownloadPlan plan) =>
-      _serial(() async {
-        final job = _HlsJob(parent, plan, TaskStatus.running, 0);
-        _jobs[parent.taskId] = job;
-        final root = File(await parent.filePath());
-        if (await root.exists()) await root.delete();
-        final directory = Directory(packagePath(root.path));
-        // A previous incomplete attempt at this episode must not satisfy a new
-        // rendition's assets merely because both use asset0.ts as a local name.
-        if (await directory.exists()) await directory.delete(recursive: true);
-        await directory.create(recursive: true);
-        await _save(job);
-        await _publish(job);
-        try {
-          await _enqueueMissing(job, const {});
-        } catch (_) {
-          await _fail(job);
-          rethrow;
+  Future<void> start(DownloadTask parent, HlsDownloadPlan plan) => _serial(
+    () async {
+      final root = File(await parent.filePath());
+      // A new rendition owns the output path exclusively. Retire even a
+      // persisted parent whose job.json was lost, so a stale Retry/Delete
+      // cannot reuse or remove the replacement's media.
+      final owners = <String, Task>{
+        for (final record in await downloader.database.allRecords(
+          group: parentGroup,
+        ))
+          record.taskId: record.task,
+        for (final old in _jobs.values) old.parent.taskId: old.parent,
+      };
+      for (final old in owners.values) {
+        if (old.taskId == parent.taskId || await old.filePath() != root.path) {
+          continue;
         }
-      });
+        _jobs.remove(old.taskId)?.status = TaskStatus.canceled;
+        await _stopChildrenById(old.taskId);
+        await downloader.database.deleteRecordWithId(old.taskId);
+        onUpdate(TaskStatusUpdate(old, TaskStatus.canceled));
+      }
+      final job = _HlsJob(parent, plan, TaskStatus.running, 0);
+      _jobs[parent.taskId] = job;
+      if (await root.exists()) await root.delete();
+      final directory = Directory(packagePath(root.path));
+      // A previous incomplete attempt at this episode must not satisfy a new
+      // rendition's assets merely because both use asset0.ts as a local name.
+      if (await directory.exists()) await directory.delete(recursive: true);
+      await directory.create(recursive: true);
+      await _save(job);
+      await _publish(job);
+      try {
+        await _enqueueMissing(job, const {});
+      } catch (error) {
+        await _fail(job, error);
+        rethrow;
+      }
+    },
+  );
 
   Future<void> restore(List<TaskRecord> records) => _serial(() async {
     for (final record in records.where(
       (record) => record.group == parentGroup,
     )) {
       if (record.status == TaskStatus.complete ||
-          record.status == TaskStatus.canceled ||
-          record.status == TaskStatus.failed) {
+          record.status == TaskStatus.canceled) {
         continue;
       }
       final parent = record.task as DownloadTask;
@@ -85,7 +106,10 @@ class HlsDownloadManager {
           HlsDownloadPlan.fromJson(
             Map<String, dynamic>.from(json['plan'] as Map),
           ),
-          TaskStatus.values[json['status'] as int],
+          // A terminal DB failure can be newer if writing job.json failed.
+          record.status == TaskStatus.failed
+              ? TaskStatus.failed
+              : TaskStatus.values[json['status'] as int],
           json['generation'] as int,
         );
         _jobs[parent.taskId] = job;
@@ -96,19 +120,36 @@ class HlsDownloadManager {
           job.status = TaskStatus.running;
         }
         job.progress = record.progress;
+        job.size = record.expectedFileSize;
+        job.exception = json['exception'] is Map
+            ? TaskException.fromJson(
+                Map<String, dynamic>.from(json['exception'] as Map),
+              )
+            : record.exception;
+        if (record.status == TaskStatus.failed && record.exception != null) {
+          job.exception = record.exception;
+        }
         await _publish(job);
       } catch (error, stack) {
         talker.error('Could not restore HLS download', error, stack);
         final job = _jobs[parent.taskId];
         if (job != null) {
-          await _fail(job);
+          await _fail(job, error);
           continue;
         }
         await _stopChildrenById(parent.taskId);
         await downloader.database.updateRecord(
-          TaskRecord(parent, TaskStatus.failed, 0, -1),
+          TaskRecord(
+            parent,
+            TaskStatus.failed,
+            record.progress,
+            -1,
+            _exception(error),
+          ),
         );
-        onUpdate(TaskStatusUpdate(parent, TaskStatus.failed));
+        onUpdate(
+          TaskStatusUpdate(parent, TaskStatus.failed, _exception(error)),
+        );
       }
     }
   });
@@ -116,11 +157,11 @@ class HlsDownloadManager {
   /// Run only after FileDownloader has replayed statuses persisted while the
   /// app was suspended, so old terminal callbacks cannot hit a fresh retry.
   Future<void> reconcile() => _serial(() async {
-    final native = (await downloader.allTasks(
-      allGroups: true,
-    )).map((task) => task.taskId).toSet();
+    final native = (await downloader.allTasks(allGroups: true))
+        .map((task) => task.taskId)
+        .toSet();
     for (final job in _jobs.values.toList()) {
-      if (job.status == TaskStatus.paused) {
+      if (job.status == TaskStatus.paused || job.status == TaskStatus.failed) {
         await _stopChildren(job);
         continue;
       }
@@ -133,7 +174,7 @@ class HlsDownloadManager {
           error,
           stack,
         );
-        await _fail(job);
+        await _fail(job, error);
       }
     }
   });
@@ -144,7 +185,7 @@ class HlsDownloadManager {
     } catch (error, stack) {
       talker.error('Could not finalize HLS download', error, stack);
       final job = _jobs[update.task.metaData];
-      if (job != null) await _fail(job);
+      if (job != null) await _fail(job, error);
     }
   });
 
@@ -161,19 +202,23 @@ class HlsDownloadManager {
       if (update.status == TaskStatus.failed ||
           update.status == TaskStatus.notFound ||
           update.status == TaskStatus.canceled) {
-        job.status = TaskStatus.failed;
-        await _stopChildren(job);
-        await _save(job);
-        await _publish(job);
+        await _fail(
+          job,
+          update.exception ??
+              (update.status == TaskStatus.notFound ||
+                      update.responseStatusCode != null
+                  ? TaskHttpException(
+                      'Media request failed',
+                      update.responseStatusCode ?? 404,
+                    )
+                  : TaskException('Media download ${update.status.name}')),
+        );
       } else if (update.status == TaskStatus.complete) {
         final index = int.tryParse(update.task.taskId.split(':').last);
         if (index == null ||
             index >= job.plan.assets.length ||
             !await _validAsset(job, job.plan.assets[index])) {
-          job.status = TaskStatus.failed;
-          await _stopChildren(job);
-          await _save(job);
-          await _publish(job);
+          await _fail(job, TaskFileSystemException('Incomplete media segment'));
           return;
         }
         await _checkCompletion(job);
@@ -187,6 +232,7 @@ class HlsDownloadManager {
     if (job.status != TaskStatus.running) return true;
     job.status = TaskStatus.paused;
     await _serial(() async {
+      if (!identical(_jobs[id], job)) return;
       await _save(job);
       await _stopChildren(job);
       await _publish(job);
@@ -202,12 +248,13 @@ class HlsDownloadManager {
     }
     job.generation++;
     job.status = TaskStatus.running;
-    await _save(job);
-    await _publish(job);
+    job.exception = null;
     try {
+      await _save(job);
+      await _publish(job);
       await _enqueueMissing(job, const {});
-    } catch (_) {
-      await _fail(job);
+    } catch (error) {
+      await _fail(job, error);
       rethrow;
     }
     return true;
@@ -219,6 +266,7 @@ class HlsDownloadManager {
     job.status =
         TaskStatus.canceled; // Invalidate in-flight callbacks immediately.
     await _serial(() async {
+      if (!identical(_jobs[id], job)) return;
       await _stopChildren(job);
       _jobs.remove(id);
       final root = File(await job.filePath());
@@ -231,14 +279,35 @@ class HlsDownloadManager {
     return true;
   }
 
-  Future<void> _fail(_HlsJob job) async {
+  static TaskException _exception(Object error) {
+    final exception = switch (error) {
+      TaskException() => error,
+      FileSystemException() => TaskFileSystemException(error.message),
+      _ => TaskException(error.toString()),
+    };
+    // CDN paths can contain signatures even without named query parameters.
+    final description = redactSecrets(
+      exception.description.replaceAll(
+        RegExp(r'https?://[^\s<>"\x27]+'),
+        '[URL]',
+      ),
+    );
+    return TaskException.fromJson({
+      ...exception.toJson(),
+      'description': description,
+    });
+  }
+
+  Future<void> _fail(_HlsJob job, Object error) async {
     job.status = TaskStatus.failed;
-    await _stopChildren(job);
+    job.exception = _exception(error);
     try {
       await _save(job);
     } on FileSystemException catch (error, stack) {
       talker.error('Could not persist failed HLS job', error, stack);
     }
+    await _stopChildren(job);
+    talker.warning('HLS download failed: ${job.exception}');
     await _publish(job);
   }
 
@@ -319,9 +388,8 @@ class HlsDownloadManager {
     if (count == job.plan.assets.length) {
       for (final entry in job.plan.playlists.entries) {
         if (entry.key != 'index.m3u8') {
-          await File(
-            p.join(directory, entry.key),
-          ).writeAsString(entry.value, flush: true);
+          await File(p.join(directory, entry.key))
+              .writeAsString(entry.value, flush: true);
         }
       }
       final prefix = p.basename(directory);
@@ -365,6 +433,7 @@ class HlsDownloadManager {
         'plan': job.plan.toJson(),
         'status': job.status.index,
         'generation': job.generation,
+        'exception': job.exception?.toJson(),
       }),
       flush: true,
     );
@@ -373,10 +442,10 @@ class HlsDownloadManager {
 
   Future<void> _publish(_HlsJob job) async {
     await downloader.database.updateRecord(
-      TaskRecord(job.parent, job.status, job.progress, job.size),
+      TaskRecord(job.parent, job.status, job.progress, job.size, job.exception),
     );
     onUpdate(TaskProgressUpdate(job.parent, job.progress, job.size));
-    onUpdate(TaskStatusUpdate(job.parent, job.status));
+    onUpdate(TaskStatusUpdate(job.parent, job.status, job.exception));
   }
 }
 
@@ -387,6 +456,7 @@ class _HlsJob {
   int generation;
   double progress = 0;
   int size = -1;
+  TaskException? exception;
   final assetLengths = <String, int>{};
   Future<String>? _filePath;
   Future<String> filePath() => _filePath ??= parent.filePath();

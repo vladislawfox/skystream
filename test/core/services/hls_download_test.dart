@@ -44,8 +44,7 @@ void main() {
     rejectQueue = false;
     rejectAfter = 10000;
     playlists = {
-      '/episode/1080.m3u8':
-          '#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nfirst.ts\n#EXTINF:6,\nsecond.ts\n#EXT-X-ENDLIST\n',
+      '/episode/1080.m3u8': '#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nfirst.ts\n#EXTINF:6,\nsecond.ts\n#EXT-X-ENDLIST\n',
     };
     bodies = {
       '/episode/first.ts': [1, 2, 3],
@@ -91,11 +90,9 @@ void main() {
         .setMockMethodCallHandler(channel, (call) async {
           switch (call.method) {
             case 'enqueue':
-              final task =
-                  Task.createFromJsonString(
-                        (call.arguments as List).first as String,
-                      )
-                      as DownloadTask;
+              final task = Task.createFromJsonString(
+                (call.arguments as List).first as String,
+              ) as DownloadTask;
               if (rejectQueue || queued.length >= rejectAfter) return false;
               queued[task.taskId] = task;
               return true;
@@ -144,53 +141,47 @@ void main() {
     await manager.handle(TaskStatusUpdate(task, TaskStatus.complete));
   }
 
-  test(
-    'selected episode rendition is an offline package only after all media arrives',
-    () async {
-      final task = parent();
-      await manager.start(task, await plan('/redirect.m3u8'));
-      expect(File(await task.filePath()).existsSync(), isFalse);
-      final children = queued.values.toList();
-      expect(children.map((task) => task.url), [
-        url('/episode/first.ts'),
-        url('/episode/second.ts'),
-      ]);
-      await deliver(children.first);
-      expect(File(await task.filePath()).existsSync(), isFalse);
-      await deliver(children.last);
-      expect(
-        (await downloader.database.recordForId(task.taskId))!.status,
-        TaskStatus.complete,
-      );
-      expect(
-        (await downloader.database.recordForId(task.taskId))!.expectedFileSize,
-        7,
-      );
-      final root = await File(await task.filePath()).readAsString();
-      expect(root, contains('hls-21fa6ec133797cc2.hls/asset0.ts'));
-      expect(root, isNot(contains('http')));
-      expect(
-        await File(
-          p.join(directory.path, 'hls-21fa6ec133797cc2.hls/asset1.ts'),
-        ).readAsBytes(),
-        [4, 5, 6, 7],
-      );
-      expect(
-        requests,
-        containsAll(['GET /episode/first.ts', 'GET /episode/second.ts']),
-      );
-    },
-  );
+  test('selected episode rendition is an offline package only after all media arrives', () async {
+    final task = parent();
+    await manager.start(task, await plan('/redirect.m3u8'));
+    expect(File(await task.filePath()).existsSync(), isFalse);
+    final children = queued.values.toList();
+    expect(children.map((task) => task.url), [
+      url('/episode/first.ts'),
+      url('/episode/second.ts'),
+    ]);
+    await deliver(children.first);
+    expect(File(await task.filePath()).existsSync(), isFalse);
+    await deliver(children.last);
+    expect(
+      (await downloader.database.recordForId(task.taskId))!.status,
+      TaskStatus.complete,
+    );
+    expect(
+      (await downloader.database.recordForId(task.taskId))!.expectedFileSize,
+      7,
+    );
+    final root = await File(await task.filePath()).readAsString();
+    expect(root, contains('hls-21fa6ec133797cc2.hls/asset0.ts'));
+    expect(root, isNot(contains('http')));
+    expect(
+      await File(p.join(directory.path, 'hls-21fa6ec133797cc2.hls/asset1.ts'))
+          .readAsBytes(),
+      [4, 5, 6, 7],
+    );
+    expect(
+      requests,
+      containsAll(['GET /episode/first.ts', 'GET /episode/second.ts']),
+    );
+  });
 
   test(
     'Auto preserves the best variant, external audio, keys and byte ranges',
     () async {
-      playlists['/master.m3u8'] =
-          '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub",NAME="ICTV",DEFAULT=YES,URI="audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=100,RESOLUTION=640x480,AUDIO="dub"\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=500,RESOLUTION=1920x1080,AUDIO="dub"\nhigh.m3u8\n';
+      playlists['/master.m3u8'] = '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub",NAME="ICTV",DEFAULT=YES,URI="audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=100,RESOLUTION=640x480,AUDIO="dub"\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=500,RESOLUTION=1920x1080,AUDIO="dub"\nhigh.m3u8\n';
       playlists['/audio.m3u8'] =
           '#EXTM3U\n#EXTINF:6,\nsound.aac\n#EXT-X-ENDLIST\n';
-      playlists['/high.m3u8'] =
-          '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key"\n#EXT-X-MAP:URI="media.mp4",BYTERANGE="2@0"\n#EXTINF:6,\n#EXT-X-BYTERANGE:3@2\nmedia.mp4\n#EXTINF:6,\n#EXT-X-BYTERANGE:3\nmedia.mp4\n#EXT-X-ENDLIST\n';
+      playlists['/high.m3u8'] = '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key"\n#EXT-X-MAP:URI="media.mp4",BYTERANGE="2@0"\n#EXTINF:6,\n#EXT-X-BYTERANGE:3@2\nmedia.mp4\n#EXTINF:6,\n#EXT-X-BYTERANGE:3\nmedia.mp4\n#EXT-X-ENDLIST\n';
       bodies.addAll({
         '/sound.aac': [9],
         '/key': List.filled(16, 8),
@@ -263,6 +254,195 @@ void main() {
   );
 
   test(
+    'terminal HTTP failure survives parent publication and app restart',
+    () async {
+      await manager.start(parent(), await plan());
+      final child = queued.values.first;
+      await manager.handle(
+        TaskStatusUpdate(
+          child,
+          TaskStatus.failed,
+          TaskHttpException('Service unavailable', 503),
+        ),
+      );
+      final record = (await downloader.database.recordForId('episode'))!;
+      expect(record.exception, isA<TaskHttpException>());
+      expect((record.exception as TaskHttpException).httpResponseCode, 503);
+      expect(
+        updates.whereType<TaskStatusUpdate>().last.exception,
+        isA<TaskHttpException>(),
+      );
+      manager = HlsDownloadManager(
+        downloader: downloader,
+        onUpdate: updates.add,
+      );
+      updates.clear();
+      await manager.restore([record]);
+      final restored = updates.whereType<TaskStatusUpdate>().last;
+      expect(restored.status, TaskStatus.failed);
+      expect((restored.exception as TaskHttpException).httpResponseCode, 503);
+      expect(queued, isEmpty);
+    },
+  );
+
+  test('failed episode resumes after restart without downloading completed media again', () async {
+    await manager.start(parent(), await plan());
+    final children = queued.values.toList();
+    await deliver(children.first);
+    await manager.handle(
+      TaskStatusUpdate(
+        children.last,
+        TaskStatus.failed,
+        TaskConnectionException('Request timed out'),
+      ),
+    );
+    manager = HlsDownloadManager(downloader: downloader, onUpdate: updates.add);
+    await manager.restore(await downloader.database.allRecords());
+    await manager.reconcile();
+    expect(
+      queued,
+      isEmpty,
+      reason: 'failed episodes wait for an explicit retry',
+    );
+    expect(await manager.resume('episode'), isTrue);
+    expect(queued, hasLength(1));
+    expect(queued.values.single.url, url('/episode/second.ts'));
+    expect(
+      (await downloader.database.recordForId('episode'))!.exception,
+      isNull,
+    );
+    await manager.handle(TaskStatusUpdate(children.last, TaskStatus.canceled));
+    expect(
+      (await downloader.database.recordForId('episode'))!.status,
+      TaskStatus.running,
+    );
+    await deliver(queued.values.single);
+    expect(
+      (await downloader.database.recordForId('episode'))!.status,
+      TaskStatus.complete,
+    );
+    expect(requests.where((r) => r == 'GET /episode/first.ts'), hasLength(1));
+  });
+
+  for (final lostJob in [false, true]) {
+    test(
+      'replacing a failed source retires its package ownership (lost job=$lostJob)',
+      () async {
+        await manager.start(parent(), await plan());
+        await manager.handle(
+          TaskStatusUpdate(queued.values.first, TaskStatus.failed),
+        );
+        if (lostJob) {
+          await File(
+            p.join(
+              HlsDownloadManager.packagePath(await parent().filePath()),
+              'job.json',
+            ),
+          ).delete();
+          manager = HlsDownloadManager(
+            downloader: downloader,
+            onUpdate: updates.add,
+          );
+          await manager.restore(await downloader.database.allRecords());
+        }
+        final replacement = parent().copyWith(
+          taskId: 'replacement',
+          url: url('/other-quality.m3u8'),
+        );
+        await manager.start(replacement, await plan());
+        expect(await downloader.database.recordForId('episode'), isNull);
+        expect(
+          updates.whereType<TaskStatusUpdate>().any(
+            (u) =>
+                u.task.taskId == 'episode' && u.status == TaskStatus.canceled,
+          ),
+          isTrue,
+        );
+        final children = queued.values.toList();
+        await deliver(children.first);
+        expect(await manager.resume('episode'), isFalse);
+        expect(await manager.cancel('episode'), isFalse);
+        expect(await File(await children.first.filePath()).readAsBytes(), [
+          1,
+          2,
+          3,
+        ]);
+        await deliver(children.last);
+        expect(
+          (await downloader.database.recordForId('replacement'))!.status,
+          TaskStatus.complete,
+        );
+        expect(File(await replacement.filePath()).existsSync(), isTrue);
+      },
+    );
+  }
+
+  test('failed database state prevents automatic restart from stale running job JSON', () async {
+    await manager.start(parent(), await plan());
+    final record = (await downloader.database.recordForId('episode'))!;
+    await downloader.database.updateRecord(
+      TaskRecord(
+        record.task,
+        TaskStatus.failed,
+        record.progress,
+        -1,
+        TaskConnectionException('Timed out'),
+      ),
+    );
+    manager = HlsDownloadManager(downloader: downloader, onUpdate: updates.add);
+    await manager.restore(await downloader.database.allRecords());
+    await manager.reconcile();
+    expect(queued, isEmpty);
+    final restored = (await downloader.database.recordForId('episode'))!;
+    expect(restored.status, TaskStatus.failed);
+    expect(restored.exception, isA<TaskConnectionException>());
+  });
+
+  for (final action in ['cancel', 'pause']) {
+    test(
+      'queued $action of a retired owner cannot mutate its replacement',
+      () async {
+        await manager.start(parent(), await plan());
+        final replacement = parent().copyWith(taskId: 'replacement');
+        final starting = manager.start(replacement, await plan());
+        final stopping = action == 'cancel'
+            ? manager.cancel('episode')
+            : manager.pause('episode');
+        await starting;
+        await stopping;
+        expect(await downloader.database.recordForId('episode'), isNull);
+        final json = jsonDecode(
+          await File(
+            p.join(
+              HlsDownloadManager.packagePath(await replacement.filePath()),
+              'job.json',
+            ),
+          ).readAsString(),
+        ) as Map<String, dynamic>;
+        expect(json['status'], TaskStatus.running.index);
+        for (final task in queued.values.toList()) {
+          await deliver(task);
+        }
+        expect(
+          (await downloader.database.recordForId('replacement'))!.status,
+          TaskStatus.complete,
+        );
+      },
+    );
+  }
+
+  test('notFound preserves HTTP 404 even without a native exception', () async {
+    await manager.start(parent(), await plan());
+    await manager.handle(
+      TaskStatusUpdate(queued.values.first, TaskStatus.notFound),
+    );
+    final exception = (await downloader.database.recordForId('episode'))!
+        .exception;
+    expect(exception, isA<TaskHttpException>());
+    expect((exception as TaskHttpException).httpResponseCode, 404);
+  });
+
+  test(
     'cancel removes a package and late completion cannot recreate its root',
     () async {
       final task = parent();
@@ -272,9 +452,8 @@ void main() {
       await manager.handle(TaskStatusUpdate(stale, TaskStatus.complete));
       expect(File(await task.filePath()).existsSync(), isFalse);
       expect(
-        Directory(
-          p.join(directory.path, 'hls-21fa6ec133797cc2.hls'),
-        ).existsSync(),
+        Directory(p.join(directory.path, 'hls-21fa6ec133797cc2.hls'))
+            .existsSync(),
         isFalse,
       );
       expect(await downloader.database.recordForId(task.taskId), isNull);
@@ -283,8 +462,7 @@ void main() {
 
   test('live and DRM sources fail before media is enqueued', () async {
     playlists['/live.m3u8'] = '#EXTM3U\n#EXTINF:6,\nfirst.ts\n';
-    playlists['/drm.m3u8'] =
-        '#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI="key"\n#EXTINF:6,\nfirst.ts\n#EXT-X-ENDLIST\n';
+    playlists['/drm.m3u8'] = '#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI="key"\n#EXTINF:6,\nfirst.ts\n#EXT-X-ENDLIST\n';
     await expectLater(plan('/live.m3u8'), throwsA(isA<FormatException>()));
     await expectLater(plan('/drm.m3u8'), throwsA(isA<FormatException>()));
     expect(queued, isEmpty);
@@ -303,14 +481,17 @@ void main() {
         TaskStatus.failed,
       );
       expect(File(await parent().filePath()).existsSync(), isFalse);
+      expect(
+        (await downloader.database.recordForId('episode'))!.exception,
+        isA<TaskFileSystemException>(),
+      );
     },
   );
 
   test(
     'a truncated ranged response fails the package instead of waiting forever',
     () async {
-      playlists['/range.m3u8'] =
-          '#EXTM3U\n#EXTINF:6,\n#EXT-X-BYTERANGE:8@0\nmedia.mp4\n#EXT-X-ENDLIST\n';
+      playlists['/range.m3u8'] = '#EXTM3U\n#EXTINF:6,\n#EXT-X-BYTERANGE:8@0\nmedia.mp4\n#EXT-X-ENDLIST\n';
       await manager.start(parent(), await plan('/range.m3u8'));
       final task = queued.values.single;
       await File(await task.filePath()).writeAsBytes([1, 2]);
@@ -323,23 +504,20 @@ void main() {
     },
   );
 
-  test(
-    'resume enqueue failure stops partially queued assets and marks parent failed',
-    () async {
-      await manager.start(parent(), await plan());
-      await manager.pause('episode');
-      rejectAfter = 1;
-      await expectLater(
-        manager.resume('episode'),
-        throwsA(isA<FileSystemException>()),
-      );
-      expect(queued, isEmpty);
-      expect(
-        (await downloader.database.recordForId('episode'))!.status,
-        TaskStatus.failed,
-      );
-    },
-  );
+  test('resume enqueue failure stops partially queued assets and marks parent failed', () async {
+    await manager.start(parent(), await plan());
+    await manager.pause('episode');
+    rejectAfter = 1;
+    await expectLater(
+      manager.resume('episode'),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(queued, isEmpty);
+    expect(
+      (await downloader.database.recordForId('episode'))!.status,
+      TaskStatus.failed,
+    );
+  });
 
   test('restart enqueue failure ignores stale child completion', () async {
     await manager.start(parent(), await plan());
@@ -354,6 +532,33 @@ void main() {
       TaskStatus.failed,
     );
   });
+
+  test(
+    'a resume persistence failure stays retryable instead of stuck running',
+    () async {
+      await manager.start(parent(), await plan());
+      await manager.pause('episode');
+      final obstacle = Directory(
+        p.join(
+          HlsDownloadManager.packagePath(await parent().filePath()),
+          'job.json.pending',
+        ),
+      );
+      await obstacle.create();
+      await expectLater(
+        manager.resume('episode'),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(
+        (await downloader.database.recordForId('episode'))!.status,
+        TaskStatus.failed,
+      );
+      expect(queued, isEmpty);
+      await obstacle.delete();
+      expect(await manager.resume('episode'), isTrue);
+      expect(queued, hasLength(2));
+    },
+  );
 
   test(
     'restore waits for native backlog before restarting missing assets',
@@ -380,8 +585,7 @@ void main() {
   );
 
   test('initialization map byte range may precede its URI attribute', () async {
-    playlists['/map.m3u8'] =
-        '#EXTM3U\n#EXT-X-MAP:BYTERANGE="2@0",URI="media.mp4"\n#EXTINF:6,\nsegment.m4s\n#EXT-X-ENDLIST\n';
+    playlists['/map.m3u8'] = '#EXTM3U\n#EXT-X-MAP:BYTERANGE="2@0",URI="media.mp4"\n#EXTINF:6,\nsegment.m4s\n#EXT-X-ENDLIST\n';
     final parsed = await plan('/map.m3u8');
     expect(
       parsed.playlists['index.m3u8'],
@@ -411,8 +615,7 @@ void main() {
   );
 
   test('a non-key HTTP response cannot complete encrypted HLS', () async {
-    playlists['/key.m3u8'] =
-        '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="bad-key"\n#EXTINF:6,\nepisode/first.ts\n#EXT-X-ENDLIST\n';
+    playlists['/key.m3u8'] = '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="bad-key"\n#EXTINF:6,\nepisode/first.ts\n#EXT-X-ENDLIST\n';
     bodies['/bad-key'] = [1, 2, 3];
     await manager.start(parent(), await plan('/key.m3u8'));
     final tasks = queued.values.toList();
@@ -444,30 +647,24 @@ void main() {
     },
   );
 
-  test(
-    'restore finishes a persisted pause whose native cancellation was interrupted',
-    () async {
-      await manager.start(parent(), await plan());
-      final jobFile = File(
-        p.join(directory.path, 'hls-21fa6ec133797cc2.hls/job.json'),
-      );
-      final json =
-          jsonDecode(await jobFile.readAsString()) as Map<String, dynamic>;
-      json['status'] = TaskStatus.paused.index;
-      await jobFile.writeAsString(jsonEncode(json));
-      manager = HlsDownloadManager(
-        downloader: downloader,
-        onUpdate: updates.add,
-      );
-      await manager.restore(await downloader.database.allRecords());
-      await manager.reconcile();
-      expect(queued, isEmpty);
-      expect(
-        (await downloader.database.recordForId('episode'))!.status,
-        TaskStatus.paused,
-      );
-    },
-  );
+  test('restore finishes a persisted pause whose native cancellation was interrupted', () async {
+    await manager.start(parent(), await plan());
+    final jobFile = File(
+      p.join(directory.path, 'hls-21fa6ec133797cc2.hls/job.json'),
+    );
+    final json =
+        jsonDecode(await jobFile.readAsString()) as Map<String, dynamic>;
+    json['status'] = TaskStatus.paused.index;
+    await jobFile.writeAsString(jsonEncode(json));
+    manager = HlsDownloadManager(downloader: downloader, onUpdate: updates.add);
+    await manager.restore(await downloader.database.allRecords());
+    await manager.reconcile();
+    expect(queued, isEmpty);
+    expect(
+      (await downloader.database.recordForId('episode'))!.status,
+      TaskStatus.paused,
+    );
+  });
 
   test(
     'episode filenames with spaces produce portable local playlist references',
@@ -509,8 +706,7 @@ void main() {
       'resume revalidates cached media after $invalidateBy a completed file',
       () async {
         // A byte range gives truncation a known expected length.
-        playlists['/episode/1080.m3u8'] =
-            '#EXTM3U\n#EXTINF:6,\n#EXT-X-BYTERANGE:3@0\nfirst.ts\n#EXTINF:6,\nsecond.ts\n#EXT-X-ENDLIST\n';
+        playlists['/episode/1080.m3u8'] = '#EXTM3U\n#EXTINF:6,\n#EXT-X-BYTERANGE:3@0\nfirst.ts\n#EXTINF:6,\nsecond.ts\n#EXT-X-ENDLIST\n';
         final task = parent();
         await manager.start(task, await plan());
         final firstGeneration = queued.values.toList();

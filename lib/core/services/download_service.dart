@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
+
 import 'package:background_downloader/background_downloader.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -183,13 +184,8 @@ class DownloadService {
             (Config.requestTimeout, const Duration(seconds: 100)),
             (
               Config.holdingQueue,
-              (
-                _ref
-                    .read(storageServiceProvider)
-                    .getDownloadConcurrency()
-                    .clamp(1, 10),
-                2,
-                1,
+              _queueLimits(
+                _ref.read(storageServiceProvider).getDownloadConcurrency(),
               ),
             ),
           ],
@@ -377,9 +373,9 @@ class DownloadService {
     // Let the broadcast bridge dispatch the native status backlog first.
     await Future<void>.delayed(Duration.zero);
     await _hls.reconcile();
-    final nativeIds = (await FileDownloader().allTasks(
-      allGroups: true,
-    )).map((task) => task.taskId).toSet();
+    final nativeIds = (await FileDownloader().allTasks(allGroups: true))
+        .map((task) => task.taskId)
+        .toSet();
     for (final record in await FileDownloader().database.allRecords()) {
       if (record.group == HlsDownloadManager.parentGroup ||
           record.group == HlsDownloadManager.assetGroup) {
@@ -538,6 +534,27 @@ class DownloadService {
       }
       return;
     }
+    final saved = await FileDownloader().database.recordForId(taskId);
+    if (saved?.status == TaskStatus.complete ||
+        saved?.status == TaskStatus.canceled) {
+      return;
+    }
+    if (saved?.group == HlsDownloadManager.parentGroup) {
+      final error = TaskResumeException(
+        'Saved download data is unavailable. Start this episode again from its details page.',
+      );
+      await FileDownloader().database.updateRecord(
+        TaskRecord(
+          saved!.task,
+          TaskStatus.failed,
+          saved.progress,
+          saved.expectedFileSize,
+          error,
+        ),
+      );
+      _sharedEvents.add(TaskStatusUpdate(saved.task, TaskStatus.failed, error));
+      throw error;
+    }
     final task = await FileDownloader().taskForId(taskId);
     if (task is DownloadTask) {
       final records = await FileDownloader().database.allRecords();
@@ -575,6 +592,11 @@ class DownloadService {
     }
   }
 
+  // All HLS segments share one group. Its limit must not serialize transfers;
+  // the total preference and two connections per host bound the native queue.
+  static (int, int, int) _queueLimits(int concurrent) =>
+      (concurrent.clamp(1, 10), 2, concurrent.clamp(1, 10));
+
   Future<void> applyQueueSettings({
     required int maxConcurrent,
     required int chunks,
@@ -583,7 +605,7 @@ class DownloadService {
     await storage.setDownloadConcurrency(maxConcurrent);
     await storage.setDownloadChunks(chunks);
     await FileDownloader().configure(
-      globalConfig: [(Config.holdingQueue, (maxConcurrent.clamp(1, 10), 2, 1))],
+      globalConfig: [(Config.holdingQueue, _queueLimits(maxConcurrent))],
     );
   }
 
@@ -736,7 +758,11 @@ class DownloadService {
         (r) =>
             (r.status == TaskStatus.enqueued ||
                 r.status == TaskStatus.running ||
-                r.status == TaskStatus.paused) &&
+                r.status == TaskStatus.paused ||
+                (r.status == TaskStatus.failed &&
+                    r.group == HlsDownloadManager.parentGroup &&
+                    r.task.url == url &&
+                    _hls.canResume(r.taskId))) &&
             (r.task.metaData.isNotEmpty ? r.task.metaData : r.task.url) ==
                 (trackingUrl ?? url),
       );
@@ -749,7 +775,8 @@ class DownloadService {
         }
 
         // If it was paused, resume it!
-        if (existingRecord.status == TaskStatus.paused) {
+        if (existingRecord.status == TaskStatus.paused ||
+            existingRecord.status == TaskStatus.failed) {
           if (kDebugMode) {
             debugPrint('[DownloadService] Auto-resuming paused task.');
           }

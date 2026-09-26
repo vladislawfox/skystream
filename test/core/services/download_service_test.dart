@@ -2,7 +2,10 @@ import 'dart:io';
 import 'dart:convert';
 
 import 'package:background_downloader/background_downloader.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -13,6 +16,9 @@ import 'package:skystream/core/services/download_service.dart';
 import 'package:skystream/core/services/hls_download_plan.dart';
 import 'package:skystream/core/services/hls_download_manager.dart';
 import 'package:skystream/core/storage/storage_service.dart';
+import 'package:skystream/features/library/presentation/downloads_provider.dart';
+import 'package:skystream/features/library/presentation/widgets/downloads_tab.dart';
+import 'package:skystream/l10n/generated/app_localizations.dart';
 import 'package:talker_flutter/talker_flutter.dart';
 
 /// Two manners problems in the download path, driven through the real
@@ -38,6 +44,7 @@ import 'package:talker_flutter/talker_flutter.dart';
 /// arrives here as a `permissionStatus` / `requestPermission` call.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  CachedNetworkImageProvider.defaultCacheManager = _NoPosterCache();
   // Must be the first FileDownloader() call in the process - the singleton
   // keeps whichever storage it was built with.
   FileDownloader(persistentStorage: _InMemoryDownloadStorage());
@@ -47,7 +54,9 @@ void main() {
   late ProviderContainer container;
   late DownloadService service;
   late List<String> nativeCalls;
+  late List<List<dynamic>> queueConfigurations;
   late Map<String, Task> queued;
+  late bool rejectQueue;
   late PermissionStatus reportedStatus;
 
   const MethodChannel downloaderChannel = MethodChannel(
@@ -60,7 +69,9 @@ void main() {
   setUp(() async {
     tempDir = Directory.systemTemp.createTempSync('download_service_test');
     nativeCalls = <String>[];
+    queueConfigurations = [];
     queued = {};
+    rejectQueue = false;
     reportedStatus = PermissionStatus.denied;
 
     final TestDefaultBinaryMessenger messenger =
@@ -74,6 +85,9 @@ void main() {
     ) async {
       nativeCalls.add(call.method);
       switch (call.method) {
+        case 'configHoldingQueue':
+          queueConfigurations.add(List<dynamic>.from(call.arguments as List));
+          return null;
         case 'permissionStatus':
           return reportedStatus.index;
         case 'requestPermission':
@@ -81,6 +95,7 @@ void main() {
           // parking on a completer only the native side can resolve.
           return false;
         case 'enqueue':
+          if (rejectQueue) return false;
           final task = Task.createFromJsonString(
             (call.arguments as List).first as String,
           );
@@ -111,6 +126,7 @@ void main() {
       overrides: [storageServiceProvider.overrideWithValue(storage)],
     );
     service = container.read(downloadServiceProvider);
+    await FileDownloader().database.deleteAllRecords();
     talker.cleanHistory();
   });
 
@@ -265,18 +281,64 @@ void main() {
     });
   });
   test(
-    'system Cancel resolves a synthetic HLS parent and cancels every media task',
+    'initial and updated queue limits allow concurrent HLS segments',
     () async {
+      await storage.setDownloadConcurrency(5);
       await service.init();
-      const tracking = 'https://series.test/arrow#s1e2';
-      await service.startDownload(
-        url: 'https://cdn.test/episode.m3u8',
-        filename: 'episode.m3u8',
-        directory: tempDir.path,
-        item: MultimediaItem(title: 'Arrow', url: tracking, posterUrl: ''),
-        trackingUrl: tracking,
-        hlsPlan: HlsDownloadPlan(
-          {'index.m3u8': '#EXTM3U\n#EXTINF:6,\nasset0.ts\n#EXT-X-ENDLIST\n'},
+      // Native contract: total, per-host, per-group. Every HLS asset shares a group.
+      expect(queueConfigurations.last, [5, 2, 5]);
+      await service.applyQueueSettings(maxConcurrent: 6, chunks: 1);
+      expect(queueConfigurations.last, [6, 2, 6]);
+      await service.applyQueueSettings(maxConcurrent: 1, chunks: 1);
+      expect(queueConfigurations.last, [1, 2, 1]);
+    },
+  );
+
+  test('failed HLS episodes remain in the library after a refresh', () async {
+    await service.init();
+    final task = DownloadTask(
+      taskId: 'failed-episode',
+      url: 'https://cdn.test/episode.m3u8',
+      group: HlsDownloadManager.parentGroup,
+    );
+    await storage.saveDownloadMetadata(
+      task.taskId,
+      MultimediaItem(
+        title: 'Arrow',
+        url: 'https://series.test/arrow',
+        posterUrl: '',
+      ),
+    );
+    await FileDownloader().database.updateRecord(
+      TaskRecord(
+        task,
+        TaskStatus.failed,
+        0.5,
+        -1,
+        TaskHttpException('Unavailable', 503),
+      ),
+    );
+    final items = await container.read(downloadsProvider.future);
+    expect(items, hasLength(1));
+    expect(items.single.status, TaskStatus.failed);
+    expect(items.single.progress, 0.5);
+  });
+
+  for (final lostJob in [false, true]) {
+    test(
+      'starting a failed HLS source recovers with missing job=$lostJob',
+      () async {
+        await service.init();
+        const tracking = 'https://series.test/arrow#s1e15';
+        final item = MultimediaItem(
+          title: 'Arrow',
+          url: tracking,
+          posterUrl: '',
+        );
+        final hls = HlsDownloadPlan(
+          {
+            'index.m3u8': '#EXTM3U\n#EXTINF:6,\nasset0.ts\n#EXTINF:6,\nasset1.ts\n#EXT-X-ENDLIST\n',
+          },
           [
             HlsDownloadAsset(
               'https://cdn.test/first.ts',
@@ -284,35 +346,281 @@ void main() {
               {},
               null,
             ),
+            HlsDownloadAsset(
+              'https://cdn.test/second.ts',
+              'asset1.ts',
+              {},
+              null,
+            ),
           ],
-        ),
-      );
-      final parent = (await FileDownloader().database.allRecords(
+        );
+        Future<bool> startEpisode() => service.startDownload(
+          url: 'https://cdn.test/episode.m3u8',
+          filename: 'episode.m3u8',
+          directory: tempDir.path,
+          item: item,
+          trackingUrl: tracking,
+          hlsPlan: hls,
+        );
+        await startEpisode();
+        final parent = (await FileDownloader().database.allRecords(
+          group: HlsDownloadManager.parentGroup,
+        )).single;
+        final children = queued.values.toList();
+        final saved = File(await children.first.filePath());
+        await saved.writeAsBytes([1, 2, 3]);
+        // Persist a terminal failure, as if the app closed after cancellation.
+        queued.clear();
+        final jobFile = File(p.join(saved.parent.path, 'job.json'));
+        final json =
+            jsonDecode(await jobFile.readAsString()) as Map<String, dynamic>;
+        json['status'] = TaskStatus.failed.index;
+        await jobFile.writeAsString(jsonEncode(json));
+        await FileDownloader().database.updateRecord(
+          parent.copyWith(status: TaskStatus.failed),
+        );
+        if (lostJob) await jobFile.delete();
+        container.dispose();
+        container = ProviderContainer(
+          overrides: [storageServiceProvider.overrideWithValue(storage)],
+        );
+        service = container.read(downloadServiceProvider);
+        await service.init();
+        expect(await startEpisode(), isTrue);
+        if (lostJob) {
+          expect(queued, hasLength(2));
+        } else {
+          expect(await saved.exists(), isTrue);
+          expect(await saved.readAsBytes(), [1, 2, 3]);
+          expect(queued, hasLength(1));
+          expect(queued.values.single.url, 'https://cdn.test/second.ts');
+        }
+        final records = await FileDownloader().database.allRecords(
+          group: HlsDownloadManager.parentGroup,
+        );
+        expect(records, hasLength(1));
+        expect(
+          records.single.taskId,
+          lostJob ? isNot(parent.taskId) : parent.taskId,
+        );
+        expect(records.single.status, TaskStatus.running);
+      },
+    );
+  }
+
+  test(
+    'Retry reports unavailable saved data instead of silently doing nothing',
+    () async {
+      await service.init();
+      final task = DownloadTask(
+        taskId: 'missing-job',
+        url: 'https://cdn.test/episode.m3u8',
         group: HlsDownloadManager.parentGroup,
-      )).single.task;
-      expect(queued.values.single.group, HlsDownloadManager.assetGroup);
-      await service.cancelFromSystemUI(parent.taskId);
+      );
+      await FileDownloader().database.updateRecord(
+        TaskRecord(task, TaskStatus.failed, 0.5, -1),
+      );
+      await expectLater(
+        service.resumeDownload(task.taskId),
+        throwsA(isA<TaskResumeException>()),
+      );
+      expect(
+        (await FileDownloader().database.recordForId(task.taskId))!.exception,
+        isA<TaskResumeException>(),
+      );
       expect(queued, isEmpty);
-      expect(
-        await FileDownloader().database.recordForId(parent.taskId),
-        isNull,
-      );
-      expect(
-        container.read(activeDownloadsProvider),
-        isNot(contains(tracking)),
-      );
-      expect(
-        Directory(
-          HlsDownloadManager.packagePath(p.join(tempDir.path, 'episode.m3u8')),
-        ).existsSync(),
-        isFalse,
-      );
     },
   );
+
+  test('Resume all after restart preserves completed HLS downloads', () async {
+    await service.init();
+    for (final status in [TaskStatus.complete, TaskStatus.failed]) {
+      final task = DownloadTask(
+        taskId: status.name,
+        url: 'https://cdn.test/${status.name}.m3u8',
+        group: HlsDownloadManager.parentGroup,
+      );
+      await FileDownloader().database.updateRecord(
+        TaskRecord(task, status, 1, 100),
+      );
+      await storage.saveDownloadMetadata(
+        task.taskId,
+        MultimediaItem(title: status.name, url: task.url, posterUrl: ''),
+      );
+    }
+    await service.resumeDownload('complete');
+    await container.read(downloadsProvider.future);
+    await container.read(downloadsProvider.notifier).resumeAll();
+    final complete = (await FileDownloader().database.recordForId('complete'))!;
+    expect(complete.status, TaskStatus.complete);
+    expect(complete.exception, isNull);
+  });
+
+  for (final retryRejected in [false, true]) {
+    testWidgets(
+      'failed episode Retry preserves media and handles rejection=$retryRejected',
+      (tester) async {
+        await tester.runAsync(() async {
+          final task = DownloadTask(
+            taskId: 'retry-episode',
+            url: 'https://cdn.test/episode.m3u8',
+            filename: 'episode.m3u8',
+            directory: tempDir.path,
+            baseDirectory: BaseDirectory.root,
+            group: HlsDownloadManager.parentGroup,
+          );
+          await storage.saveDownloadMetadata(
+            task.taskId,
+            MultimediaItem(
+              title: 'Arrow S1E15',
+              url: 'https://series.test/arrow',
+              posterUrl: '',
+            ),
+          );
+          final manager = HlsDownloadManager(
+            downloader: FileDownloader(),
+            onUpdate: (_) {},
+          );
+          await manager.start(
+            task,
+            HlsDownloadPlan(
+              {
+                'index.m3u8': '#EXTM3U\n#EXTINF:6,\nasset0.ts\n#EXTINF:6,\nasset1.ts\n#EXT-X-ENDLIST\n',
+              },
+              [
+                HlsDownloadAsset(
+                  'https://cdn.test/first.ts',
+                  'asset0.ts',
+                  {},
+                  null,
+                ),
+                HlsDownloadAsset(
+                  'https://cdn.test/second.ts',
+                  'asset1.ts',
+                  {},
+                  null,
+                ),
+              ],
+            ),
+          );
+          final children = queued.values.toList();
+          await File(await children.first.filePath()).writeAsBytes([1, 2, 3]);
+          queued.remove(children.first.taskId);
+          await manager.handle(
+            TaskStatusUpdate(children.first, TaskStatus.complete),
+          );
+          await manager.handle(
+            TaskStatusUpdate(
+              children.last,
+              TaskStatus.failed,
+              TaskHttpException('Server unavailable', 503),
+            ),
+          );
+          await service.init();
+          await container.read(downloadsProvider.future);
+        });
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: const MaterialApp(
+              localizationsDelegates: AppLocalizations.localizationsDelegates,
+              supportedLocales: AppLocalizations.supportedLocales,
+              home: Scaffold(body: DownloadsTab()),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Arrow S1E15'), findsOneWidget);
+        expect(find.textContaining('HTTP 503'), findsOneWidget);
+        expect(find.byTooltip('Retry'), findsOneWidget);
+        await tester.runAsync(() async {
+          rejectQueue = retryRejected;
+          final expectedStatus = retryRejected
+              ? TaskStatus.failed
+              : TaskStatus.running;
+          final changed = service.updates
+              .where(
+                (update) =>
+                    update is TaskStatusUpdate &&
+                    update.task.taskId == 'retry-episode' &&
+                    update.status == expectedStatus,
+              )
+              .first;
+          await tester.tap(find.byTooltip('Retry'));
+          await changed.timeout(const Duration(seconds: 5));
+          // Resume publishes running before it queues the missing files.
+          for (
+            var attempt = 0;
+            !retryRejected && queued.isEmpty && attempt < 100;
+            attempt++
+          ) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+          }
+        });
+        await tester.pumpAndSettle();
+        if (retryRejected) {
+          expect(queued, isEmpty);
+          expect(find.byTooltip('Retry'), findsOneWidget);
+          expect(find.textContaining('Could not queue'), findsOneWidget);
+        } else {
+          expect(queued.values.map((task) => task.url), [
+            'https://cdn.test/second.ts',
+          ]);
+          expect(find.byTooltip('Retry'), findsNothing);
+        }
+        expect(find.textContaining('HTTP 503'), findsNothing);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
+
+  test('system Cancel resolves a synthetic HLS parent and cancels every media task', () async {
+    await service.init();
+    const tracking = 'https://series.test/arrow#s1e2';
+    await service.startDownload(
+      url: 'https://cdn.test/episode.m3u8',
+      filename: 'episode.m3u8',
+      directory: tempDir.path,
+      item: MultimediaItem(title: 'Arrow', url: tracking, posterUrl: ''),
+      trackingUrl: tracking,
+      hlsPlan: HlsDownloadPlan(
+        {'index.m3u8': '#EXTM3U\n#EXTINF:6,\nasset0.ts\n#EXT-X-ENDLIST\n'},
+        [HlsDownloadAsset('https://cdn.test/first.ts', 'asset0.ts', {}, null)],
+      ),
+    );
+    final parent = (await FileDownloader().database.allRecords(
+      group: HlsDownloadManager.parentGroup,
+    )).single.task;
+    expect(queued.values.single.group, HlsDownloadManager.assetGroup);
+    await service.cancelFromSystemUI(parent.taskId);
+    expect(queued, isEmpty);
+    expect(await FileDownloader().database.recordForId(parent.taskId), isNull);
+    expect(container.read(activeDownloadsProvider), isNot(contains(tracking)));
+    expect(
+      Directory(
+        HlsDownloadManager.packagePath(p.join(tempDir.path, 'episode.m3u8')),
+      ).existsSync(),
+      isFalse,
+    );
+  });
 }
 
 String _text(Talker logger) =>
     logger.history.map((TalkerData e) => e.generateTextMessage()).join('\n');
+
+// Poster fetching is unrelated to the real download persistence/UI path.
+class _NoPosterCache implements BaseCacheManager {
+  @override
+  Stream<FileResponse> getFileStream(
+    String url, {
+    String? key,
+    Map<String, String>? headers,
+    bool withProgress = false,
+  }) => const Stream.empty();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 /// The package's own [PersistentStorage] spawns a background isolate that
 /// reaches for `path_provider` through the root isolate token, which a mocked

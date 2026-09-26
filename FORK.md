@@ -44,6 +44,30 @@ Ukrainian providers are distributed separately in
 [skystream-ukrainian](https://github.com/vladislawfox/skystream-ukrainian).
 Their implementations are not embedded in the app.
 
+### HLS download recovery
+
+The native holding queue uses the configured total concurrency and at most two
+requests per host. HLS assets share a callback group, so that group's limit must
+not reduce all episode transfers to a single connection.
+
+Failed HLS episodes remain in Library with their terminal error and a Retry
+action. The parent record and `job.json` retain the error; retries revalidate
+local media and enqueue only missing segments, including after app restart.
+A failed database record takes precedence over an older running `job.json`.
+Completed episodes are excluded from Resume all. Ordinary file-download retry
+behavior is unchanged.
+
+Selecting a different source at the same output path retires the old parent
+before replacing its package. Queued actions for that old parent cannot delete
+or rewrite the new package. If saved planning data is missing, Library explains
+that the episode must be started again from its details page, which builds a
+fresh package. Retrying an intact package uses its saved media URLs; persistent
+provider errors may still require selecting a fresh source.
+
+Regression coverage is in `test/core/services/hls_download_test.dart` and
+`test/core/services/download_service_test.dart`, including the actual Library
+Retry button, repeated enqueue rejection, ownership races and restart recovery.
+
 ## Updating from upstream
 
 Start with a clean working tree and tag the accepted build before updating.

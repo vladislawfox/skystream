@@ -470,6 +470,22 @@ class _DownloadItemTile extends ConsumerWidget {
                 ],
               ),
               const SizedBox(height: LayoutConstants.spacingSm),
+              if (status == TaskStatus.failed && item.exception != null)
+                Padding(
+                  padding: const EdgeInsets.only(
+                    bottom: LayoutConstants.spacingSm,
+                  ),
+                  child: Text(
+                    item.exception is TaskHttpException
+                        ? 'HTTP ${(item.exception as TaskHttpException).httpResponseCode}: ${item.exception!.description}'
+                        : item.exception!.description,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.error,
+                    ),
+                  ),
+                ),
               if (!isDone) ...[
                 Row(
                   textDirection: TextDirection.ltr,
@@ -527,9 +543,14 @@ class _DownloadItemTile extends ConsumerWidget {
                           .pauseDownload(item.task.taskId),
                       visualDensity: VisualDensity.compact,
                     ),
-                  if (isPaused)
+                  if (isPaused || item.canRetry)
                     IconButton(
-                      icon: const Icon(Icons.play_arrow_rounded),
+                      tooltip: item.canRetry ? l10n.retry : l10n.resume,
+                      icon: Icon(
+                        item.canRetry
+                            ? Icons.refresh_rounded
+                            : Icons.play_arrow_rounded,
+                      ),
                       onPressed: () => ref
                           .read(downloadsProvider.notifier)
                           .resumeDownload(item.task.taskId),

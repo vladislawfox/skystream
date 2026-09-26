@@ -3,7 +3,9 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:skystream/core/storage/storage_service.dart';
 
 import '../../../core/domain/entity/multimedia_item.dart';
+import '../../../core/logger/app_logger.dart';
 import '../../../core/services/download_service.dart';
+import '../../../core/services/hls_download_manager.dart';
 
 part 'downloads_provider.g.dart';
 
@@ -14,6 +16,7 @@ class DownloadItem {
   final MultimediaItem item;
   final Episode? episode;
   final int timestamp;
+  final TaskException? exception;
 
   DownloadItem({
     required this.task,
@@ -22,9 +25,13 @@ class DownloadItem {
     required this.item,
     this.episode,
     required this.timestamp,
+    this.exception,
   });
 
   String get id => task.taskId;
+  bool get canRetry =>
+      status == TaskStatus.failed &&
+      task.group == HlsDownloadManager.parentGroup;
 }
 
 @Riverpod(keepAlive: true)
@@ -52,10 +59,11 @@ class DownloadsNotifier extends _$DownloadsNotifier {
     final List<DownloadItem> items = [];
 
     for (final record in records) {
-      // Skip non-download tasks and cancelled/failed ones
+      // HLS failures keep verified segments and can be retried after restart.
       if (record.task is! DownloadTask) continue;
       if (record.status == TaskStatus.canceled ||
-          record.status == TaskStatus.failed) {
+          (record.status == TaskStatus.failed &&
+              record.group != HlsDownloadManager.parentGroup)) {
         continue;
       }
 
@@ -67,6 +75,7 @@ class DownloadsNotifier extends _$DownloadsNotifier {
           task: record.task,
           status: record.status,
           progress: record.progress,
+          exception: record.exception,
           item: MultimediaItem.fromJson(
             Map<String, dynamic>.from(metadata['item'] as Map),
           ),
@@ -104,7 +113,9 @@ class DownloadsNotifier extends _$DownloadsNotifier {
         newStatus = update.status;
       }
 
-      if (newStatus == TaskStatus.canceled || newStatus == TaskStatus.failed) {
+      if (newStatus == TaskStatus.canceled ||
+          (newStatus == TaskStatus.failed &&
+              existing.task.group != HlsDownloadManager.parentGroup)) {
         // Remove from list if canceled or failed
         final newList = List<DownloadItem>.from(currentList)..removeAt(index);
         state = AsyncData(newList);
@@ -116,6 +127,9 @@ class DownloadsNotifier extends _$DownloadsNotifier {
           item: existing.item,
           episode: existing.episode,
           timestamp: existing.timestamp,
+          exception: update is TaskStatusUpdate
+              ? update.exception
+              : existing.exception,
         );
 
         final newList = List<DownloadItem>.from(currentList);
@@ -190,7 +204,19 @@ class DownloadsNotifier extends _$DownloadsNotifier {
   }
 
   Future<void> resumeDownload(String taskId) async {
-    await ref.read(downloadServiceProvider).resumeDownload(taskId);
+    try {
+      await ref.read(downloadServiceProvider).resumeDownload(taskId);
+    } catch (error, stack) {
+      final record = await FileDownloader().database.recordForId(taskId);
+      if (record?.group != HlsDownloadManager.parentGroup ||
+          record?.status != TaskStatus.failed) {
+        rethrow;
+      }
+      // The manager persisted the new cause. Keep it in the row instead of
+      // throwing from an unawaited button callback (also covers Resume all).
+      talker.error('Could not retry HLS download', error, stack);
+      state = AsyncData(await _refreshList());
+    }
   }
 
   Future<void> pauseAll() async {
@@ -203,7 +229,9 @@ class DownloadsNotifier extends _$DownloadsNotifier {
   Future<void> resumeAll() async {
     final items = state.value ?? const <DownloadItem>[];
     for (final item in items) {
-      await ref.read(downloadServiceProvider).resumeDownload(item.task.taskId);
+      if (item.status == TaskStatus.paused || item.canRetry) {
+        await resumeDownload(item.task.taskId);
+      }
     }
   }
 
