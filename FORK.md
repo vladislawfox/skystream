@@ -1,16 +1,18 @@
 # Maintained iOS fork
 
 This personal fork tracks [akashdh11/skystream](https://github.com/akashdh11/skystream).
-`main` now contains the personal iOS fixes. The rollback tag
+`main` contains upstream v2.8.0, the personal iOS fixes and HLS download recovery.
+The project version is `2.8.0+9`, matching the signed build installed on the
+personal iPhone. The rollback tag
 `ios-v2.7.6+7-rollback` points to `5d804552`, the source of the signed 2.7.6+7
-build. The v2.8.0 integration is developed on `update/upstream-v2.8.0` until
-validation and device acceptance are complete.
+build. Both integration branches remain available as development history.
 
 ## Branches and local changes
 
 - `main` is the maintained fork, not an unmodified upstream mirror.
 - `ios-local-build` and `ios-picture-in-picture` retain the previous work.
 - `update/upstream-v2.8.0` merges stable upstream `v2.8.0` (`12fb9a0d`).
+- `fix/hls-download-reliability` adds concurrent HLS transfers and failure recovery.
 - `origin` is `https://github.com/vladislawfox/skystream.git`.
 - `upstream` is `https://github.com/akashdh11/skystream.git`.
 
@@ -96,7 +98,7 @@ expires. Installing an app does not change Git branches.
 
 ## Build and tests
 
-The v2.8.0 candidate uses upstream's Flutter `3.47.5` / Dart `3.13.4`, Xcode
+The v2.8.0 fork uses upstream's Flutter `3.47.5` / Dart `3.13.4`, Xcode
 `27.0` and CocoaPods `1.17.0` on Apple Silicon. The rollback build used Flutter
 `3.47.1` / Dart `3.13.1`. From the repository root:
 
