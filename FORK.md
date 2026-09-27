@@ -2,8 +2,8 @@
 
 This personal fork tracks [akashdh11/skystream](https://github.com/akashdh11/skystream).
 `main` contains upstream v2.8.0, the personal iOS fixes and HLS download recovery.
-The project version is `2.8.0+9`, matching the signed build installed on the
-personal iPhone. The rollback tag
+The project version is `2.8.0+10`, adding browser challenge support for RezkaTV.
+The rollback tag
 `ios-v2.7.6+7-rollback` points to `5d804552`, the source of the signed 2.7.6+7
 build. Both integration branches remain available as development history.
 
@@ -45,6 +45,23 @@ independently from personal signing:
 Ukrainian providers are distributed separately in
 [skystream-ukrainian](https://github.com/vladislawfox/skystream-ukrainian).
 Their implementations are not embedded in the app.
+
+### RezkaTV browser challenge support
+
+Anubis pages (including HTTP 200 challenges) run their own script in the system
+WebView with the HTTP request's user agent. Only the named Anubis clearance cookie
+joins the existing Cloudflare cookie allowlist; account cookies are excluded.
+After clearance, the engine retries the original request once with its method,
+body and headers intact. The temporary WebView is disposed when finished.
+Concurrent requests share the solve, and cancellation stops it when no callers
+remain. Existing Cloudflare requests keep their previous flow.
+
+The RezkaTV `.sky` provider stays in the separate Ukrainian plugin repository.
+Unit coverage: `test/core/extensions/engine/js_engine_anubis_test.dart`.
+Opt-in native coverage: `integration_test/rezkatv_live_test.dart`, using base64
+`REZKA_SCRIPT` and `REZKA_MANIFEST` values in a `--dart-define-from-file` JSON.
+The live test loads catalog/search, Arrow S1E15 and The Fast and the Furious
+and reads their HLS playlists without downloading full videos.
 
 ### HLS download recovery
 

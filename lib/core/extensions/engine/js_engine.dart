@@ -5,12 +5,14 @@ import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' show RootIsolateToken;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart' as wv;
+
 import '../../storage/extension_repository.dart';
 import '../../network/cloudflare_bypass.dart';
 import '../../logger/app_logger.dart';
@@ -558,6 +560,16 @@ class JsEngineService {
 
   // ── HTTP bridge ───────────────────────────────────────────────────────────
 
+  @visibleForTesting
+  Future<CfResult?> Function(
+    String url, {
+    required String userAgent,
+    Future<void>? cancellation,
+    String? callerId,
+    Future<void> Function(String host)? onSolved,
+  })
+  solveAnubis = CloudflareBypass.instance.solveAnubis;
+
   Future<Map<String, dynamic>> _handleHttp(
     String argsJson, {
     CancelToken? cancelToken,
@@ -601,21 +613,49 @@ class JsEngineService {
 
       talker.debug('[JS HTTP] $method $url ($requestId)');
 
-      final response = await fetchCappedPlainBody(
+      final options = Options(
+        method: method,
+        headers: headers,
+        contentType: contentType,
+        validateStatus: (_) => true,
+        followRedirects: true,
+        sendTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 15),
+      );
+      var response = await fetchCappedPlainBody(
         _dio,
         url,
         data: body,
         cancelToken: cancelToken,
-        options: Options(
-          method: method,
-          headers: headers,
-          contentType: contentType,
-          validateStatus: (_) => true,
-          followRedirects: true,
-          sendTimeout: const Duration(seconds: 15),
-          receiveTimeout: const Duration(seconds: 15),
-        ),
+        options: options,
       );
+
+      if (CloudflareBypass.isAnubisChallenge(response.body)) {
+        if (cancelToken?.isCancelled ?? false) throw cancelToken!.cancelError!;
+        final userAgent = headers.entries
+            .firstWhere((e) => e.key.toLowerCase() == 'user-agent')
+            .value
+            .toString();
+        // A GET to the origin establishes clearance. Never navigate an AJAX
+        // POST as a GET or return the warm-up page as its JSON response.
+        final solved = await solveAnubis(
+          '${response.realUri.origin}/',
+          userAgent: userAgent,
+          cancellation: cancelToken?.whenCancel.then<void>((_) {}),
+          callerId: callerNamespace,
+          onSolved: _injectCfCookies,
+        );
+        if (cancelToken?.isCancelled ?? false) throw cancelToken!.cancelError!;
+        if (solved != null) {
+          response = await fetchCappedPlainBody(
+            _dio,
+            url,
+            data: body,
+            cancelToken: cancelToken,
+            options: options,
+          );
+        }
+      }
 
       final responseHeaders = response.headers.map.map<String, dynamic>(
         (k, v) =>
@@ -695,12 +735,7 @@ class JsEngineService {
       if (webCookies.isEmpty) return;
       final uri = Uri.parse('https://$host/');
       final ioCookies = webCookies
-          .where(
-            (c) =>
-                c.name == 'cf_clearance' ||
-                c.name == '__cf_bm' ||
-                c.name.toString().startsWith('__cf'),
-          )
+          .where((c) => CloudflareBypass.isClearanceCookie(c.name.toString()))
           .map((c) {
             final cookie = io.Cookie(
               c.name.toString(),
@@ -1020,12 +1055,7 @@ class CfOnlyCookieInterceptor extends Interceptor {
     } catch (_) {}
 
     final cfCookies = cookies
-        .where(
-          (c) =>
-              c.name == 'cf_clearance' ||
-              c.name == '__cf_bm' ||
-              c.name.startsWith('__cf'),
-        )
+        .where((c) => CloudflareBypass.isClearanceCookie(c.name))
         .toList();
 
     String? manualCookie;
@@ -1079,9 +1109,7 @@ class CfOnlyCookieInterceptor extends Interceptor {
       for (final header in rawCookies) {
         try {
           final cookie = io.Cookie.fromSetCookieValue(header);
-          if (cookie.name == 'cf_clearance' ||
-              cookie.name == '__cf_bm' ||
-              cookie.name.startsWith('__cf')) {
+          if (CloudflareBypass.isClearanceCookie(cookie.name)) {
             ioCookies.add(cookie);
           }
         } catch (_) {}

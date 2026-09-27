@@ -232,6 +232,7 @@ class CloudflareBypass {
   /// a `(callerId, host)` pair, new callers for the same pair share the
   /// same Future instead of spawning a second WebView.
   final Map<String, Future<CfResult?>> _activeByHost = {};
+  final Map<String, AnubisSession> _activeAnubis = {};
 
   /// Composite key for cache buckets — keeps the map shape unchanged while
   /// making the scope explicit.
@@ -341,6 +342,59 @@ class CloudflareBypass {
   // ---------------------------------------------------------------------------
   // Detection
   // ---------------------------------------------------------------------------
+
+  static bool isAnubisChallenge(String body) => RegExp(
+    r'''<script\b[^>]*\bid\s*=\s*["']anubis_challenge["']''',
+    caseSensitive: false,
+  ).hasMatch(body);
+
+  /// Only browser clearance, never site account/session cookies.
+  static bool isClearanceCookie(String name) =>
+      name == 'cf_clearance' ||
+      name.startsWith('__cf') ||
+      name == 'techaro.lol-anubis-auth';
+
+  /// Let the site's own script run in WebKit, then use its clearance for HTTP.
+  /// Anubis binds clearance to the user agent. Keep this separate from the
+  /// legacy CF HTML-return path: AJAX requests must retain their method/body.
+  Future<CfResult?> solveAnubis(
+    String url, {
+    required String userAgent,
+    Future<void>? cancellation,
+    String? callerId,
+    Future<void> Function(String host)? onSolved,
+  }) async {
+    if (!platformHasWebView()) return null;
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) return null;
+    final key = 'anubis::${_scopeKey(callerId, uri.host)}::$userAgent';
+    final active = _activeAnubis[key];
+    if (active != null && !active.cancelled) return active.join(cancellation);
+    final session = AnubisSession();
+    _activeAnubis[key] = session;
+    Future<CfResult?> run() async {
+      await _acquireSpawnSlot();
+      try {
+        if (session.cancelled) return null;
+        final result = await _fetchViaWebView(
+          url,
+          key,
+          userAgent: userAgent,
+          isCancelled: () => session.cancelled,
+        );
+        if (result != null && onSolved != null) await onSolved(uri.host);
+        return result;
+      } finally {
+        // Clearance is in the cookie jar; no hidden media/ad page stays alive.
+        await _disposeHostSession(key);
+        _releaseSpawnSlot();
+        if (identical(_activeAnubis[key], session)) _activeAnubis.remove(key);
+      }
+    }
+
+    session.result = run();
+    return session.join(cancellation);
+  }
 
   bool isCloudflareChallenge(
     int? statusCode,
@@ -494,7 +548,12 @@ class CloudflareBypass {
 
   static const _maxCachedWebViews = 2;
 
-  Future<CfResult?> _fetchViaWebView(String url, String cacheKey) async {
+  Future<CfResult?> _fetchViaWebView(
+    String url,
+    String cacheKey, {
+    String? userAgent,
+    bool Function()? isCancelled,
+  }) async {
     if (kDebugMode) debugPrint('$_tag Starting fresh solve for $url');
 
     // Evict oldest cached WebViews to prevent GPU memory exhaustion.
@@ -535,6 +594,8 @@ class CloudflareBypass {
         final isClear = await controller.evaluateJavascript(
           source: '''
           (function(){
+            if (document.readyState !== 'complete' ||
+                location.href === 'about:blank') return '0';
             var t = document.title || '';
             var hasChallenge =
                 t === 'Just a moment...' ||
@@ -542,6 +603,7 @@ class CloudflareBypass {
                 !!document.getElementById('challenge-form') ||
                 !!document.querySelector('[data-translate="checking_browser"]') ||
                 !!document.querySelector('.cf-mitigated-content') ||
+                !!document.getElementById('anubis_challenge') ||
                 typeof window._cf_chl_opt !== 'undefined';
             return hasChallenge ? '0' : '1';
           })()
@@ -556,6 +618,7 @@ class CloudflareBypass {
         );
         final body = html?.toString();
         if (body == null || body.isEmpty) return;
+        if (isAnubisChallenge(body)) return;
 
         result = CfResult(
           body: body,
@@ -584,6 +647,7 @@ class CloudflareBypass {
         initialSize: _headlessViewport,
         initialUrlRequest: URLRequest(url: WebUri(url)),
         initialSettings: InAppWebViewSettings(
+          userAgent: userAgent,
           javaScriptEnabled: true,
           domStorageEnabled: true,
           mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
@@ -638,11 +702,13 @@ class CloudflareBypass {
         rethrow;
       }
       final deadline = DateTime.now().add(_timeout);
-      while (!solved && DateTime.now().isBefore(deadline)) {
+      while (!solved &&
+          !(isCancelled?.call() ?? false) &&
+          DateTime.now().isBefore(deadline)) {
         await Future<void>.delayed(_pollInterval);
       }
 
-      if (!solved) {
+      if (!solved || (isCancelled?.call() ?? false)) {
         await _disposeQuietly(headless);
         return null;
       }
@@ -887,4 +953,24 @@ class CfResult {
     required this.statusCode,
     required this.finalUrl,
   });
+}
+
+/// A shared solve stops only when every waiting request has left.
+@visibleForTesting
+class AnubisSession {
+  late Future<CfResult?> result;
+  int _waiters = 0;
+  bool cancelled = false;
+
+  Future<CfResult?> join(Future<void>? cancellation) async {
+    _waiters++;
+    try {
+      return await Future.any([
+        result,
+        if (cancellation != null) cancellation.then<CfResult?>((_) => null),
+      ]);
+    } finally {
+      if (--_waiters == 0) cancelled = true;
+    }
+  }
 }

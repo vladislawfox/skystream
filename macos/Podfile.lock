@@ -1,4 +1,7 @@
 PODS:
+  - cupertino_http (0.0.1):
+    - Flutter
+    - FlutterMacOS
   - flutter_inappwebview_macos (0.0.1):
     - FlutterMacOS
     - OrderedSet (~> 6.0.3)
@@ -12,6 +15,7 @@ PODS:
   - VLCKit (3.7.3)
 
 DEPENDENCIES:
+  - cupertino_http (from `Flutter/ephemeral/.symlinks/plugins/cupertino_http/darwin`)
   - flutter_inappwebview_macos (from `Flutter/ephemeral/.symlinks/plugins/flutter_inappwebview_macos/macos`)
   - flutter_js_ng (from `Flutter/ephemeral/.symlinks/plugins/flutter_js_ng/macos`)
   - FlutterMacOS (from `Flutter/ephemeral`)
@@ -23,6 +27,8 @@ SPEC REPOS:
     - OrderedSet
 
 EXTERNAL SOURCES:
+  cupertino_http:
+    :path: Flutter/ephemeral/.symlinks/plugins/cupertino_http/darwin
   flutter_inappwebview_macos:
     :path: Flutter/ephemeral/.symlinks/plugins/flutter_inappwebview_macos/macos
   flutter_js_ng:
@@ -35,6 +41,7 @@ EXTERNAL SOURCES:
     :podspec: vendor/VLCKit.podspec.json
 
 SPEC CHECKSUMS:
+  cupertino_http: 94ac07f5ff090b8effa6c5e2c47871d48ab7c86c
   flutter_inappwebview_macos: c2d68649f9f8f1831bfcd98d73fd6256366d9d1d
   flutter_js_ng: 5bb0e85b3fcdc44b2639704b620c4b962b485cf5
   FlutterMacOS: c232990155153907050900a2e175c7773903ba4e
