@@ -1,5 +1,9 @@
 # Maintained iOS fork
 
+For the current owner-facing changelog and step-by-step iPhone build/install
+instructions in Ukrainian, see [README_FORK.md](README_FORK.md).
+The dated verification sections below are historical records of each build.
+
 This personal fork tracks [akashdh11/skystream](https://github.com/akashdh11/skystream).
 `main` contains upstream v2.8.0, the personal iOS fixes and HLS download recovery.
 The project version is `2.8.0+10`, adding browser challenge support for RezkaTV.
@@ -93,13 +97,17 @@ Start with a clean working tree and tag the accepted build before updating.
 Create an integration branch from the maintained `main`, then merge a reviewed
 stable upstream tag without rewriting history:
 
+Replace `vX.Y.Z` below with the reviewed new upstream tag. The existing
+`update/upstream-v2.8.0` branch records the completed 2.8.0 integration.
+
 ```sh
+SKYSTREAM_UPSTREAM_TAG=vX.Y.Z
 git fetch origin
 git fetch upstream --tags
 git switch main
 git merge --ff-only origin/main
-git switch -c update/upstream-v2.8.0
-git merge --no-ff v2.8.0
+git switch -c "update/upstream-$SKYSTREAM_UPSTREAM_TAG"
+git merge --no-ff "$SKYSTREAM_UPSTREAM_TAG"
 ```
 
 Resolve conflicts while keeping the fork's network, PiP, download and signing
@@ -316,5 +324,7 @@ search, movie/series details, stream resolution, HLS, subtitles and poster loadi
 
 The signed profile 2.8.0+8 passed strict code-signature verification and was
 installed and launched over the existing app. Independent integration review
-found no actionable issue. Device acceptance of normal viewing gestures and
-longer playback is still pending; `main` and the rollback tag retain 2.7.6+7.
+found no actionable issue. The user subsequently accepted the upstream update
+and reported slow/failing episode downloads, addressed in 2.8.0+9. That build
+was promoted to `main` in `7431d7e1`; the rollback tag still retains 2.7.6+7.
+See [README_FORK.md](README_FORK.md) for the current version and later changes.

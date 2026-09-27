@@ -1,5 +1,7 @@
 # SkyStream
 
+**Наш iOS-форк:** [журнал змін і ручна збірка та встановлення на iPhone — README_FORK.md](README_FORK.md).
+
 <div align="center">
   <a href="https://github.com/akashdh11/skystream/releases">
     <img src="https://img.shields.io/github/downloads/akashdh11/skystream/total?style=for-the-badge&color=1f6feb" />
