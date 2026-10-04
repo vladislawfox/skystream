@@ -468,7 +468,9 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate, VlcPipPlayb
         DispatchQueue.main.async { [weak self] in
           guard gate.beginDelivery(), let self, !self.isDisposed,
                 let buffer = self.textureRenderer?.copyPixelBuffer()?.takeRetainedValue() else { return }
-          let geometry = self.visibleVideoGeometry
+          let geometry = self.visibleVideoGeometry.forSampleBuffer(
+            size: CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer)),
+            scaled: self.textureRenderer?.codedSize == .zero)
           container.enqueue(buffer, position: CMTime(value: Int64(self.pipPosition), timescale: 1000),
             visibleSize: geometry.visibleSize, playbackRate: self.pipIsPlaying ? self.pipRate : 0,
             pixelAspectRatio: geometry.pixelAspectRatio)

@@ -356,6 +356,8 @@ final class VlcPictureInPicture: NSObject, AVPictureInPictureControllerDelegate,
   func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController,
                                  failedToStartPictureInPictureWithError error: Error) {
     guard !disposed else { return }
+    let failure = error as NSError
+    NSLog("VLC PiP entry failed: %@ (%ld)", failure.domain, failure.code)
     apply(policy.entryFailedOrTimedOut())
     finishBackgroundGrace()
     completeStart(false)

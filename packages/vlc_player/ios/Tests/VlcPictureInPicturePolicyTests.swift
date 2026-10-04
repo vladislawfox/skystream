@@ -132,6 +132,21 @@ struct PolicyTests {
                                     sampleAspectRatio: .zero)
     expect(invalidSAR.pixelAspectRatio, CGSize(width: 1, height: 1), "missing SAR defaults square")
 
+    let original = VlcVideoGeometry(size: CGSize(width: 320, height: 180))
+    let scaled = original.forSampleBuffer(size: CGSize(width: 320, height: 182), scaled: true)
+    expect(scaled.visibleSize, CGSize(width: 320, height: 182), "scaled rows are picture, not padding")
+    let displayAspect = scaled.visibleSize.width * scaled.pixelAspectRatio.width /
+      (scaled.visibleSize.height * scaled.pixelAspectRatio.height)
+    expect(abs(displayAspect - 16.0 / 9.0) < 0.000001, true, "scaled picture keeps its display aspect")
+    let padded = original.forSampleBuffer(size: CGSize(width: 320, height: 192), scaled: false)
+    expect(padded.visibleSize, original.visibleSize, "genuine decoder padding still gets cropped")
+    let scaledAnamorphic = anamorphic.forSampleBuffer(size: CGSize(width: 720, height: 578), scaled: true)
+    let anamorphicAspect = scaledAnamorphic.visibleSize.width * scaledAnamorphic.pixelAspectRatio.width /
+      (scaledAnamorphic.visibleSize.height * scaledAnamorphic.pixelAspectRatio.height)
+    expect(abs(anamorphicAspect - 4.0 / 3.0) < 0.000001, true, "scaled anamorphic aspect is preserved")
+    let unknown = VlcVideoGeometry(size: .zero).forSampleBuffer(size: CGSize(width: 320, height: 182), scaled: true)
+    expect(unknown.visibleSize, CGSize(width: 320, height: 182), "unknown geometry uses the whole buffer safely")
+
     let gate = VlcFrameDeliveryGate()
     expect(gate.requestDelivery(), true, "first frame schedules")
     let burst = (0..<1000).map { _ in gate.requestDelivery() }

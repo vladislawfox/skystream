@@ -92,6 +92,52 @@ class RunnerTests: XCTestCase {
                    CGRect(x: 0, y: 0, width: 320, height: 180))
   }
 
+  func testScaledFrameKeepsBottomRowsAndDisplayAspect() throws {
+    guard #available(iOS 15.0, *) else { throw XCTSkip("Sample-buffer PiP requires iOS 15") }
+    var frame: CVPixelBuffer?
+    XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 320, 182,
+      kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+      [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &frame), kCVReturnSuccess)
+    let buffer = try XCTUnwrap(frame)
+    CVPixelBufferLockBaseAddress(buffer, [])
+    for plane in 0..<2 {
+      let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, plane)
+      let rows = CVPixelBufferGetHeightOfPlane(buffer, plane)
+      let base = try XCTUnwrap(CVPixelBufferGetBaseAddressOfPlane(buffer, plane))
+      memset(base, plane == 0 ? 16 : 128, stride * rows)
+      // These last two luma rows are real image, not decoder padding.
+      if plane == 0 {
+        memset(base.advanced(by: 180 * stride), 235, 320)
+        memset(base.advanced(by: 181 * stride), 235, 320)
+      }
+    }
+    CVPixelBufferUnlockBaseAddress(buffer, [])
+    let geometry = VlcVideoGeometry(size: CGSize(width: 320, height: 180))
+      .forSampleBuffer(size: CGSize(width: 320, height: 182), scaled: true)
+    let view = VlcSampleBufferView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
+    defer { view.dispose() }
+    view.enqueue(buffer, position: .zero, visibleSize: geometry.visibleSize,
+      playbackRate: 0, pixelAspectRatio: geometry.pixelAspectRatio)
+    CVPixelBufferLockBaseAddress(buffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+    let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+    let pixels = try XCTUnwrap(CVPixelBufferGetBaseAddressOfPlane(buffer, 0))
+      .assumingMemoryBound(to: UInt8.self)
+    for row in 180..<182 {
+      XCTAssertTrue(UnsafeBufferPointer(start: pixels.advanced(by: row * stride), count: 320)
+        .allSatisfy { $0 == 235 }, "The bottom image marker must not be edge-extended away")
+    }
+    var description: CMVideoFormatDescription?
+    XCTAssertEqual(CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault,
+      imageBuffer: buffer, formatDescriptionOut: &description), noErr)
+    let format = try XCTUnwrap(description)
+    XCTAssertEqual(CMVideoFormatDescriptionGetCleanAperture(format, originIsAtTopLeft: true),
+      CGRect(x: 0, y: 0, width: 320, height: 182))
+    let display = CMVideoFormatDescriptionGetPresentationDimensions(format,
+      usePixelAspectRatio: true, useCleanAperture: true)
+    XCTAssertEqual(display.width / display.height, 16.0 / 9.0, accuracy: 0.000001)
+  }
+
   func testPictureInPictureUsesSameLayerAndRejectsOffscreenStart() async throws {
     guard #available(iOS 15.0, *) else { throw XCTSkip("Sample-buffer PiP requires iOS 15") }
     guard AVPictureInPictureController.isPictureInPictureSupported() else {
@@ -162,6 +208,60 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(CMTimeGetSeconds(CMTimebaseGetTime(timebase)), 600, accuracy: 0.001)
     XCTAssertEqual(CMTimeGetSeconds(CMTimeSubtract(CMTimebaseGetTime(timebase), range.start)),
                    57, accuracy: 0.001)
+  }
+
+  func testNativeExternalSubtitlesReachThePictureInPictureFrames() async throws {
+    guard #available(iOS 15.0, *) else { throw XCTSkip("Sample-buffer PiP requires iOS 15") }
+    let movie = try XCTUnwrap(Bundle(for: RunnerTests.self).url(
+      forResource: "subtitle-black", withExtension: "mp4", subdirectory: "offline-hls"))
+    let subtitle = FileManager.default.temporaryDirectory.appendingPathComponent("pip-caption-\(UUID()).srt")
+    try "1\n00:00:00,000 --> 00:00:20,000\nPICTURE IN PICTURE\n".write(to: subtitle, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: subtitle) }
+    for options in [[], ["--avcodec-hw=none"]] {
+      let view = VlcSampleBufferView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
+      let player = VlcPlayerPlatformView(viewId: 9002, messenger: TestMessenger(), options: options,
+        target: .sampleBuffer(view, fit: "contain"))
+      defer { player.dispose() }
+      let opened = expectation(description: "black subtitle fixture opens")
+      player.setSource(movie.absoluteString, httpHeaders: [:], mediaOptions: [],
+        startPosition: 0, autoPlay: true) { result in
+        XCTAssertFalse(result is FlutterError)
+        opened.fulfill()
+      }
+      await fulfillment(of: [opened], timeout: 2)
+      let decodeDeadline = Date().addingTimeInterval(5)
+      while player.textureRenderer?.copyPixelBuffer()?.takeRetainedValue() == nil && Date() < decodeDeadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+      }
+      func brightPixels() throws -> Int {
+        let frame = try XCTUnwrap(player.textureRenderer?.copyPixelBuffer()?.takeRetainedValue())
+        CVPixelBufferLockBaseAddress(frame, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(frame, .readOnly) }
+        let width = CVPixelBufferGetWidthOfPlane(frame, 0)
+        let height = CVPixelBufferGetHeightOfPlane(frame, 0)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(frame, 0)
+        let base = try XCTUnwrap(CVPixelBufferGetBaseAddressOfPlane(frame, 0))
+          .assumingMemoryBound(to: UInt8.self)
+        var count = 0
+        for y in 0..<height {
+          for x in 0..<width where base[y * stride + x] > 180 { count += 1 }
+        }
+        return count
+      }
+      XCTAssertLessThan(try brightPixels(), 10, "Fixture starts black without subtitle pixels")
+      let added = expectation(description: "external subtitle accepted by VLC")
+      player.addSubtitle(subtitle.absoluteString) { result in
+        XCTAssertFalse(result is FlutterError)
+        added.fulfill()
+      }
+      await fulfillment(of: [added], timeout: 2)
+      let captionDeadline = Date().addingTimeInterval(5)
+      while try brightPixels() < 50 && Date() < captionDeadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+      }
+      XCTAssertGreaterThan(try brightPixels(), 50, "Subtitle must be blended into PiP's actual pixel buffer: \(options)")
+      XCTAssertTrue(player.pictureInPicture?.controller?.contentSource?.sampleBufferDisplayLayer === view.displayLayer)
+    }
   }
 
   func testVlcDecodedVideoUsesContinuousPresentationAndPictureInPicture() async throws {

@@ -161,6 +161,18 @@ final class VlcFrameDeliveryGate {
 struct VlcVideoGeometry {
   let visibleSize: CGSize
   let pixelAspectRatio: CGSize
+  /// VideoToolbox's subtitle workaround scales the picture across every row.
+  /// Keep those pixels and compensate via SAR instead of cropping them as padding.
+  func forSampleBuffer(size: CGSize, scaled: Bool) -> VlcVideoGeometry {
+    guard scaled, size.width > 0, size.height > 0 else { return self }
+    guard visibleSize.width > 0, visibleSize.height > 0 else {
+      return VlcVideoGeometry(size: size)
+    }
+    return VlcVideoGeometry(size: size, sampleAspectRatio: CGSize(
+      width: pixelAspectRatio.width * visibleSize.width * size.height,
+      height: pixelAspectRatio.height * visibleSize.height * size.width))
+  }
+
   init(size: CGSize, orientation: Int = 0, sampleAspectRatio: CGSize = CGSize(width: 1, height: 1)) {
     // VLC3 vmem calls video_format_ApplyRotation before configuring our
     // buffer. VLCKit's track metadata remains in source orientation; values

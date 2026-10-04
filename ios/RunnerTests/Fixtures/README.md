@@ -1,5 +1,14 @@
 # Offline HLS and PiP audio fixtures
 
+`offline-hls/subtitle-black.mp4` is a synthetic black H.264 video used to check
+that native subtitles become actual PiP frame pixels, with hardware and software
+decoding. Generated with:
+
+```sh
+ffmpeg -f lavfi -i 'color=c=black:s=320x180:r=25:d=20' -an -c:v libx264 \
+  -pix_fmt yuv420p -movflags +faststart offline-hls/subtitle-black.mp4
+```
+
 `pip-audio.mp4` combines the existing synthetic 20-second video fixture with a
 quiet 440 Hz sine wave (AAC stereo, 48 kHz). It contains no third-party media.
 `offline-hls/` is the local HLS package produced by `HlsDownloadManager` from

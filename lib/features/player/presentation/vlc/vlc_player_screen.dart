@@ -38,6 +38,7 @@ import '../../domain/smoothness.dart';
 import '../../domain/track_memory.dart';
 import '../../domain/playback_recovery.dart';
 import '../../domain/side_car_subtitles.dart';
+import '../../domain/native_side_car_subtitles.dart';
 import '../../domain/skip_segments.dart';
 import '../../domain/source_row_status.dart';
 import '../../domain/playback_tracker.dart';
@@ -191,6 +192,11 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       defaultTargetPlatform == TargetPlatform.iOS
       ? VlcDarwinRenderer.sampleBuffer
       : playerDarwinRenderer;
+
+  // AVKit PiP receives VLC pixels, without Flutter overlays.
+  bool get _nativeSubtitles =>
+      defaultTargetPlatform == TargetPlatform.iOS &&
+      _darwinRenderer == VlcDarwinRenderer.sampleBuffer;
 
   /// Whether the bars are up. Owned here rather than by the controls: Back
   /// puts them away before it ever pops (see [_hideChromeForBack]), and they
@@ -1288,46 +1294,51 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       _hlsMedia = (uri: mediaUri, headers: headers);
     }
 
-    // The source's subtitle files are read and drawn by SkyStream rather than
-    // handed to libVLC, which drew them into the picture - so Zoom cut them
-    // off - and could not open the ones behind a playlist or headers at all.
-    // Listed here and fetched when first shown; see [SideCarSubtitles].
-    //
-    // Sent with the video's headers, as they were when libVLC had them
-    // through the proxy: a source's subtitles sit behind the same checks as
-    // its video. A local file has no use for them.
-    final previousSideCar = _sideCars.active;
-    final sideCars = _sideCars.replaceSourceTracks([
-      for (final sub in stream.subtitles ?? const <SubtitleFile>[])
-        if (_playableUri(sub.url) case final url?)
-          (
-            url: url,
-            label: sub.label,
-            language: sub.lang,
-            headers: url.scheme.startsWith('http') ? headers : null,
-          ),
-    ]);
-    // The file the viewer was reading before this reopen - a failover, a
-    // recovery - goes back on, the way [_restoreTracks] puts back a track
-    // inside the video. Having been reading it overrules the Off default for
-    // this media already.
-    final carried = previousSideCar?.origin == SideCarOrigin.source
-        ? matchSideCar(sideCars, previousSideCar!)
-        : null;
-    if (carried != null) {
-      _subtitlesOffPending = false;
-      _autoPickPending = false;
-      unawaited(_sideCars.select(carried, from: startAt));
-    } else if (_autoPickPending && _sideCars.active == null) {
-      // Auto: the source's file in the viewer's language, straight away. When
-      // it ships none, the tracks inside the video are looked at once they
-      // are known - see [_pickPreferredSubtitle].
-      final preferred = preferredSubtitleIndex([
-        for (final track in sideCars) track.languageCode,
-      ], _read(subtitleLanguageProvider));
-      if (preferred != null) {
+    if (_nativeSubtitles) {
+      await _registerNativeSubtitles(stream, headers, generation);
+      if (_disposed || generation != _generation) return;
+    } else {
+      // The source's subtitle files are read and drawn by SkyStream rather than
+      // handed to libVLC, which drew them into the picture - so Zoom cut them
+      // off - and could not open the ones behind a playlist or headers at all.
+      // Listed here and fetched when first shown; see [SideCarSubtitles].
+      //
+      // Sent with the video's headers, as they were when libVLC had them
+      // through the proxy: a source's subtitles sit behind the same checks as
+      // its video. A local file has no use for them.
+      final previousSideCar = _sideCars.active;
+      final sideCars = _sideCars.replaceSourceTracks([
+        for (final sub in stream.subtitles ?? const <SubtitleFile>[])
+          if (_playableUri(sub.url) case final url?)
+            (
+              url: url,
+              label: sub.label,
+              language: sub.lang,
+              headers: url.scheme.startsWith('http') ? headers : null,
+            ),
+      ]);
+      // The file the viewer was reading before this reopen - a failover, a
+      // recovery - goes back on, the way [_restoreTracks] puts back a track
+      // inside the video. Having been reading it overrules the Off default for
+      // this media already.
+      final carried = previousSideCar?.origin == SideCarOrigin.source
+          ? matchSideCar(sideCars, previousSideCar!)
+          : null;
+      if (carried != null) {
+        _subtitlesOffPending = false;
         _autoPickPending = false;
-        unawaited(_sideCars.select(sideCars[preferred], from: startAt));
+        unawaited(_sideCars.select(carried, from: startAt));
+      } else if (_autoPickPending && _sideCars.active == null) {
+        // Auto: the source's file in the viewer's language, straight away. When
+        // it ships none, the tracks inside the video are looked at once they
+        // are known - see [_pickPreferredSubtitle].
+        final preferred = preferredSubtitleIndex([
+          for (final track in sideCars) track.languageCode,
+        ], _read(subtitleLanguageProvider));
+        if (preferred != null) {
+          _autoPickPending = false;
+          unawaited(_sideCars.select(sideCars[preferred], from: startAt));
+        }
       }
     }
 
@@ -1337,6 +1348,68 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       // [_publishPanelData] - and this is the only write that turns it
       // back on, so the tick would stay off after a recovery without it.
       _publishPanelData();
+    }
+  }
+
+  /// Keep the pre-2.8.1 native path for iOS so subtitle pixels reach PiP.
+  Future<void> _registerNativeSubtitles(
+    StreamResult stream,
+    Map<String, String> headers,
+    int generation,
+  ) async {
+    // Register the source's subtitles with the engine rather than tracking
+    // them ourselves. VLC turns each into an ordinary subtitle track, so
+    // getSubtitleTracks() returns embedded and external entries in one list
+    // with one kind of id.
+    //
+    // addSubtitle has no header channel at any layer, so a subtitle behind
+    // the same protection as the video can only be reached by proxying it.
+    //
+    // Collected first and added as a batch: every native backend hardcodes
+    // libVLC's select flag to true, so unawaited adds would select whichever
+    // platform round trip finished last.
+    final subtitlesNeedIdentity = stream.headers?.isNotEmpty ?? false;
+    final sideCars = <Uri>[];
+    final sideCarLanguages = <String?>[];
+    for (final sub in stream.subtitles ?? const <SubtitleFile>[]) {
+      final subUri = _playableUri(sub.url);
+      if (subUri == null) continue;
+      final deliverable = subtitlesNeedIdentity
+          ? await _proxied(subUri, headers)
+          : subUri;
+      if (_disposed || generation != _generation) return;
+      sideCars.add(deliverable);
+      sideCarLanguages.add(sub.lang);
+    }
+    await addNativeSideCarSubtitles(
+      _controller,
+      sideCars,
+      // Off has no preference to express: the batch still runs, because the
+      // Subtitles menu can only offer tracks that exist, but naming a language
+      // here would cost a round trip to select a track [_applySubtitleDefault]
+      // turns straight back off - and would show it for those two frames.
+      enable: _subtitlesOffPending
+          ? null
+          : preferredSubtitleIndex(
+              sideCarLanguages,
+              _read(subtitleLanguageProvider),
+            ),
+    );
+    if (_disposed || generation != _generation) return;
+    // Only now, and only when the engine is there to hear it. Every native
+    // hardcodes libVLC's select flag on, so an add that lands after a disable
+    // undoes it: Off can be applied after the batch, never before it.
+    //
+    // On the FIRST open of the session there is no engine yet - the VlcPlayer
+    // widget is only built once this method reaches the playing stage below,
+    // so the controller queues setMedia and every add and replays them on
+    // attach. `disableSubtitle` is not queued, it throws. That open is left to
+    // the tick path, which is what [_applySubtitleDefault] is for; this call
+    // is what spares every LATER open - a failover, a recovery, the next
+    // episode - a quarter-second of subtitles nobody asked for.
+    if (_subtitlesOffPending && _controller.isAttached) {
+      await _disableSubtitles();
+      if (_disposed || generation != _generation) return;
     }
   }
 
@@ -2460,9 +2533,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // Numbering only where the plugin actually populated it; a great many hand
     // back zeroes, and `S0 E0` is worse than nothing.
     if (episode.season > 0 && episode.episode > 0) {
-      parts.add(
-        l10n.playerSeasonEpisode(episode.season, episode.episode),
-      );
+      parts.add(l10n.playerSeasonEpisode(episode.season, episode.episode));
     }
     final name = episode.name.trim();
     // Dropped when it is the numbering again under another name, which is what
@@ -2624,7 +2695,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     await showPlayerPanel(
       context,
       controller: _controller,
-      sideCars: _sideCars,
+      sideCars: _nativeSubtitles ? null : _sideCars,
       initialTab: tab,
       isTv: isTv,
       // A remote and a keyboard both need focus inside the panel to use it at
@@ -3871,7 +3942,8 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
             // Subtitle files, drawn over the picture rather than into it, so
             // the fit never reaches them - and in PiP as well, as libVLC's
             // were. Lifted over the controls while those are up.
-            if (_stage == _Stage.playing) _sideCarSubtitles(isTv: isTv),
+            if (_stage == _Stage.playing && !_nativeSubtitles)
+              _sideCarSubtitles(isTv: isTv),
             // Everything before a picture: getting links, checking them,
             // opening one - `setMedia` hands libVLC a URL and returns, so the
             // playing stage begins with the video widget an empty surface -
