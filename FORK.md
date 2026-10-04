@@ -5,17 +5,20 @@ instructions in Ukrainian, see [README_FORK.md](README_FORK.md).
 The dated verification sections below are historical records of each build.
 
 This personal fork tracks [akashdh11/skystream](https://github.com/akashdh11/skystream).
-`main` contains upstream v2.8.0, the personal iOS fixes and HLS download recovery.
-The project version is `2.8.0+10`, adding browser challenge support for RezkaTV.
-The rollback tag
-`ios-v2.7.6+7-rollback` points to `5d804552`, the source of the signed 2.7.6+7
-build. Both integration branches remain available as development history.
+The candidate branch `update/upstream-v2.8.1` merges stable upstream `v2.8.1`
+(`32852114`) and sets the project version to `2.8.1+11`. It retains the personal
+iOS fixes, HLS download recovery and browser challenge support for RezkaTV.
+`main` remains on `2.8.0+10` until the updated device build is accepted.
+The published rollback tag `ios-v2.8.0+10-rollback` points to `205e91c2`;
+the signed 2.8.0+10 app is also retained locally. Earlier integration branches
+and the `ios-v2.7.6+7-rollback` tag remain available as history.
 
 ## Branches and local changes
 
 - `main` is the maintained fork, not an unmodified upstream mirror.
 - `ios-local-build` and `ios-picture-in-picture` retain the previous work.
 - `update/upstream-v2.8.0` merges stable upstream `v2.8.0` (`12fb9a0d`).
+- `update/upstream-v2.8.1` merges stable upstream `v2.8.1` (`32852114`).
 - `fix/hls-download-reliability` adds concurrent HLS transfers and failure recovery.
 - `origin` is `https://github.com/vladislawfox/skystream.git`.
 - `upstream` is `https://github.com/akashdh11/skystream.git`.
@@ -116,16 +119,17 @@ the same bundle identity, then install over the existing app. Push the candidate
 branch for review; fast-forward `main` only after accepting the updated build.
 Do not reset or force-push shared branches.
 
-To restore the previous app, reinstall the locally retained signed 2.7.6+7 app,
-or build a fresh checkout of `ios-v2.7.6+7-rollback` using Flutter 3.47.1. The tag
+To restore the previous app, reinstall the locally retained signed 2.8.0+10 app,
+or build a fresh checkout of `ios-v2.8.0+10-rollback` using Flutter 3.47.5. The tag
 preserves source; a development-signed app may need re-signing after its profile
 expires. Installing an app does not change Git branches.
 
 ## Build and tests
 
-The v2.8.0 fork uses upstream's Flutter `3.47.5` / Dart `3.13.4`, Xcode
-`27.0` and CocoaPods `1.17.0` on Apple Silicon. The rollback build used Flutter
-`3.47.1` / Dart `3.13.1`. From the repository root:
+The v2.8.1 candidate and v2.8.0 rollback use upstream's Flutter `3.47.5` /
+Dart `3.13.4`, Xcode `27.0` and CocoaPods `1.17.0` on Apple Silicon.
+The older 2.7.6 rollback used Flutter `3.47.1` / Dart `3.13.1`.
+From the repository root:
 
 ```sh
 flutter pub get --enforce-lockfile
@@ -159,6 +163,46 @@ SKYSTREAM_CUPERTINO_LIBRARY="$skystream_test_dir/libcupertino_http.dylib" \
 Without `SKYSTREAM_CUPERTINO_LIBRARY`, the seven native transport tests are
 skipped; that does not validate URLSession. The native source path above matches
 the committed lockfile and must be reviewed if that dependency changes.
+
+## v2.8.1 integration, 2026-10-04
+
+Merge `07c5cda6` imports upstream stable `v2.8.1` (`32852114`) onto fork main
+`205e91c2`. The only textual conflict was the application version, resolved as
+`2.8.1+11`. Dependency resolution used the enforced lockfile; code generation
+introduced no tracked drift. Commit `308ce190` addresses two semantic conflicts
+identified during independent review:
+
+- iOS sample-buffer playback retains VLC subtitle registration, including
+  header proxying and file/search additions. A Flutter overlay is not part of
+  AVKit's sample-buffer layer, so upstream's new overlay path would lose
+  external subtitles in PiP. Other platforms retain that upstream path.
+  iOS therefore retains VLC's subtitle format and zoom/crop limitations.
+- VideoToolbox frames scaled to include upstream's extra two subtitle rows
+  retain the entire image. Pixel aspect ratio preserves the original display
+  shape; real decoder padding still receives edge extension and cropping.
+
+Verification after those fixes:
+
+- 2221 application tests passed; six conditional live/golden probes skipped.
+- 337 bundled VLC Dart tests passed; 59 native policy/geometry checks and
+  17 NV12 padding checks passed. `flutter analyze` reported no issues.
+- All 11 `RunnerTests` passed on iPhone 16 Pro. They cover actual AVKit PiP
+  entry/exit with offline HLS, stable 60% VLC gain/audio session, zero backward
+  presentation-clock steps, full bottom image rows, and actual subtitle pixels
+  with the default decoder and forced software decoding.
+- The initial device run passed eight of nine tests but PiP entry was refused.
+  After the integration fixes, both the full 11-test run and a separate run of
+  the real PiP test passed. No cause is claimed for the first refused entry.
+- The signed profile app passed strict code-signature verification; its
+  embedded identity is `com.vlad.skystream`, version `2.8.1`, build `11`.
+  Installation over the existing iPhone app succeeded. Automatic launch was
+  blocked by the locked screen; manual playback acceptance remains pending.
+
+The rollback tag and signed 2.8.0+10 app are retained. Main promotion awaits
+acceptance of the candidate on the device. The separately diagnosed stale
+provider URLs after a long pause are not established as fixed. No
+sample-buffer scaling benchmark was performed; the upstream texture scaler
+option was not extended speculatively to other render targets.
 
 ## Verification recorded on 2026-09-17
 
