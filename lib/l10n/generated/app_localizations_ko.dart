@@ -16,6 +16,17 @@ class AppLocalizationsKo extends AppLocalizations {
   String get languageName => '한국어';
 
   @override
+  String get addonHealthChecking => 'Checking add-on…';
+
+  @override
+  String addonHealthWorking(int ms) {
+    return 'Working · $ms ms';
+  }
+
+  @override
+  String get addonHealthUnavailable => 'Unavailable';
+
+  @override
   String get home => '홈';
 
   @override
@@ -706,6 +717,19 @@ class AppLocalizationsKo extends AppLocalizations {
   String get install => '설치';
 
   @override
+  String get discoverSearchHint => 'Search community add-ons';
+
+  @override
+  String get discoverClearSearch => 'Clear';
+
+  @override
+  String get discoverNeedsWebSetup =>
+      'Needs quick setup on the add-on\'s website';
+
+  @override
+  String get discoverOpenSetup => 'Set up on the add-on website';
+
+  @override
   String get error => '오류';
 
   @override
@@ -737,6 +761,26 @@ class AppLocalizationsKo extends AppLocalizations {
       count,
       locale: localeName,
       other: '$count개의 확장 프로그램이 업데이트되었습니다',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String extensionsNewRepositories(int count, String source) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$source에 새 저장소 $count개',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String extensionsNewPlugins(int count, String repository) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$repository에 새 플러그인 $count개',
     );
     return '$_temp0';
   }
@@ -1693,6 +1737,12 @@ class AppLocalizationsKo extends AppLocalizations {
   String get playerSourceUnplayable => 'Unplayable';
 
   @override
+  String get playerSourceCannotSeek => 'Can\'t seek';
+
+  @override
+  String get playerSourceNotVideo => 'Not a video';
+
+  @override
   String get nuvioPlugins => 'Nuvio plugins';
 
   @override
@@ -1732,5 +1782,26 @@ class AppLocalizationsKo extends AppLocalizations {
       one: '1 add-on',
     );
     return '$_temp0';
+  }
+
+  @override
+  String get addonSourcesSearchTooltip => 'Search links';
+
+  @override
+  String get addonSourcesCloseSearchTooltip => 'Close search';
+
+  @override
+  String get addonSourcesSearchHint => 'Add-on, provider, quality…';
+
+  @override
+  String get addonSourcesNoMatchFilter =>
+      'No links match. Clear search or try \"All\".';
+
+  @override
+  String get addonManageSearchHint => 'Search installed add-ons…';
+
+  @override
+  String addonManageNoMatch(String query) {
+    return 'No installed add-on matches \"$query\".';
   }
 }

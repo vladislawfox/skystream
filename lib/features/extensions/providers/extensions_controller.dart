@@ -1,7 +1,5 @@
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'dart:async';
@@ -15,40 +13,10 @@ import '../../../../core/extensions/models/extension_repository.dart';
 import '../../../../core/extensions/extension_manager.dart';
 import '../../../../core/extensions/providers.dart';
 import '../../../../core/extensions/services/repository_service.dart';
+import '../../../core/models/extension_update_report.dart';
 import '../../../core/storage/settings_repository.dart';
 
 part 'extensions_controller.g.dart';
-
-/// Whether the device is on a connection the user pays for by the byte.
-///
-/// A `Provider` holding a function rather than a `FutureProvider` so a test can
-/// pin the answer with no platform channel and no cached async value, and so
-/// each call asks afresh - a laptop moves between Wi-Fi and a phone hotspot
-/// inside one app session.
-final meteredConnectionProvider = Provider<Future<bool> Function()>(
-  (ref) => isMeteredConnection,
-);
-
-/// Deliberately answers "no" unless the platform positively says cellular.
-///
-/// Wi-Fi or Ethernet anywhere in the list settles it: an Android phone
-/// tethering over Wi-Fi still reports `wifi`, and a wired desktop must never be
-/// mistaken for a phone on a data plan. `vpn` and `other` - all iOS and macOS
-/// report while a VPN is up - say nothing about the transport underneath, and a
-/// plugin failure must not become a permanent block on ever checking again.
-Future<bool> isMeteredConnection() async {
-  try {
-    final results = await Connectivity().checkConnectivity();
-    if (results.contains(ConnectivityResult.wifi) ||
-        results.contains(ConnectivityResult.ethernet)) {
-      return false;
-    }
-    return results.contains(ConnectivityResult.mobile) ||
-        results.contains(ConnectivityResult.satellite);
-  } catch (_) {
-    return false;
-  }
-}
 
 // State for the Extensions Screen (Sealed Class Hierarchy)
 sealed class ExtensionsState {
@@ -105,16 +73,21 @@ class ExtensionsController extends _$ExtensionsController {
   /// SharedPreferences key holding the repository URLs the user has added.
   static const String repoUrlsKey = 'extension_repo_urls';
 
-  /// SharedPreferences key holding when [autoCheckForUpdates] last completed,
-  /// as milliseconds since epoch.
-  static const String lastAutoCheckKey = 'extensions_last_update_check';
+  /// SharedPreferences key holding the collections the user follows - the
+  /// repositories that list other repositories instead of plugins, like the
+  /// one the "universe" shortcode adds - as JSON: each collection's URL to
+  /// the repository URLs it listed when last read. A collection is not a
+  /// repository the user sees, so it is kept apart from [repoUrlsKey].
+  static const String collectionsKey = 'extension_collections';
 
-  /// How long after a completed background check the next launch may run one.
-  ///
-  /// Matches `NuvioRepository.autoUpdateInterval`, and for the same reason: a
-  /// cold start is not evidence that a repository moved, and someone who opens
-  /// the app six times a day does not want six rounds of manifest fetches.
-  static const Duration autoCheckInterval = Duration(hours: 6);
+  /// SharedPreferences key holding the repository URLs the user removed, so a
+  /// collection that still lists one does not bring it back.
+  static const String removedRepoUrlsKey = 'extension_removed_repo_urls';
+
+  /// SharedPreferences key holding, as JSON, every plugin package name each
+  /// repository has been seen to list: the record new plugins are told
+  /// apart by.
+  static const String seenPluginsKey = 'extension_seen_plugins';
 
   bool _initialized = false;
 
@@ -321,54 +294,193 @@ class ExtensionsController extends _$ExtensionsController {
     }
   }
 
-  /// The launch-time update check, off the launch critical path and asking
-  /// before it spends anything.
+  /// The launch-time pass over the user's plugins, run on every launch and on
+  /// any connection: reads each collection the user follows and adds the
+  /// repositories it newly lists, notes the plugins that are new in each
+  /// repository, and installs every update.
   ///
-  /// Returns the display names of the plugins with an update waiting, or an
-  /// empty list when the check did not run at all. Every early return here is
-  /// a decision not to touch the network:
+  /// Returns what changed, for the launch toasts. With no repositories and no
+  /// collections there is nothing to check - nothing could ever be found - so
+  /// it returns an empty report without a single request.
   ///
-  ///  * no repositories persisted - nothing could ever be found;
-  ///  * checked within [autoCheckInterval] - a relaunch is not news;
-  ///  * a metered connection - manifests are small, but on a data plan small is
-  ///    still the user's money spent on something they did not ask for. Opening
-  ///    the Extensions screen still fetches: that is the user asking.
-  ///
-  /// [force] is what a deliberate, user-initiated refresh passes.
-  Future<List<String>> autoCheckForUpdates({bool force = false}) async {
+  /// It used to skip a launch within six hours of the last check, and any
+  /// launch on a metered connection. Plugins scrape sites that change under
+  /// them, and a stale one is the difference between a title playing and not,
+  /// so neither is a reason to wait any more. The check is one manifest per
+  /// repository and collection; downloads follow only for plugins whose
+  /// version moved.
+  Future<ExtensionUpdateReport> autoUpdate() async {
     final prefs = await SharedPreferences.getInstance();
-    if ((prefs.getStringList(repoUrlsKey) ?? const <String>[]).isEmpty) {
-      return const <String>[];
-    }
-
-    if (!force) {
-      final last = prefs.getInt(lastAutoCheckKey);
-      if (last != null) {
-        // A negative age means the clock moved backwards; treat that as due
-        // rather than as "checked in the future" and never check again.
-        final age = DateTime.now().difference(
-          DateTime.fromMillisecondsSinceEpoch(last),
-        );
-        if (!age.isNegative && age < autoCheckInterval) return const <String>[];
-      }
-      if (await ref.read(meteredConnectionProvider)()) return const <String>[];
+    if (_savedRepoUrls(prefs).isEmpty &&
+        _readUrlMap(prefs, collectionsKey).isEmpty) {
+      return const ExtensionUpdateReport();
     }
 
     await ensureInitialized();
-    final pending = await checkForUpdates();
-    await prefs.setInt(lastAutoCheckKey, DateTime.now().millisecondsSinceEpoch);
-    return pending;
+    final newRepositories = await _followCollections();
+    final newPlugins = await _findNewPlugins();
+    await checkForUpdates();
+    final updated = await installAvailableUpdates();
+    return ExtensionUpdateReport(
+      updated: updated,
+      newRepositories: newRepositories,
+      newPlugins: newPlugins,
+    );
   }
 
-  /// Records which installed plugins have a newer version published, in
-  /// [ExtensionsState.availableUpdates]. Installs nothing.
+  /// Reads every collection the user follows and adds the repositories it
+  /// lists that the user does not have - apart from any the user removed.
+  /// Returns the names of the repositories added, under their collection's
+  /// name.
   ///
-  /// It used to download and install every one of them on the spot, called
-  /// from the first post-frame callback of a cold start. Putting third-party
-  /// executable JavaScript on someone's device is not a decision an app makes
-  /// on their behalf while they wait for the home screen - so this now only
-  /// finds them, and the Extensions screen's per-plugin update button, which
-  /// already renders off this map, is where the consent happens.
+  /// A collection used to be read once, when it was added: a repository
+  /// published into it afterwards never reached anyone who already had it.
+  ///
+  /// Quietly: a collection or repository that does not load is skipped for
+  /// this launch and tried on the next, without raising the Extensions
+  /// screen's error over whatever the user is doing.
+  Future<Map<String, List<String>>> _followCollections() async {
+    final prefs = await SharedPreferences.getInstance();
+    final repositoryService = ref.read(repositoryServiceProvider);
+    final added = <String, List<String>>{};
+
+    for (final url in _readUrlMap(prefs, collectionsKey).keys) {
+      final ExtensionRepository? collection;
+      try {
+        collection = await repositoryService.fetchRepository(url);
+      } catch (e) {
+        if (kDebugMode) debugPrint('Could not read collection $url: $e');
+        continue;
+      }
+      if (collection == null || collection.includedRepos.isEmpty) continue;
+      await _recordCollection(url, collection.includedRepos);
+
+      // Read per collection, not once before the loop: an earlier turn may
+      // have added repositories this one lists too, or followed a collection
+      // it lists. A followed one is read on its own turn, or - followed just
+      // now - had its repositories added along with it.
+      final saved = _savedRepoUrls(prefs).toSet();
+      final removed = _removedRepoUrls(prefs);
+      final followed = _readUrlMap(prefs, collectionsKey);
+      final fresh = <String>[
+        for (final listed in collection.includedRepos)
+          if (!saved.contains(listed) &&
+              !removed.contains(listed) &&
+              !followed.containsKey(listed))
+            listed,
+      ];
+      if (fresh.isEmpty) continue;
+
+      final before = <String>{for (final repo in state.repositories) repo.url};
+      for (final listed in fresh) {
+        await _addRepository(listed, <String>{url}, background: true);
+      }
+      final names = <String>[
+        for (final repo in state.repositories)
+          if (!before.contains(repo.url)) repo.name,
+      ];
+      if (names.isNotEmpty) {
+        (added[collection.name] ??= <String>[]).addAll(names);
+      }
+    }
+    return added;
+  }
+
+  /// The plugins each repository lists that no launch has seen it list
+  /// before, under the repository's name - leaving out any already
+  /// installed. Nothing is installed: which plugins to run is the user's
+  /// call.
+  ///
+  /// A repository with nothing on record - on the first launch to look, or
+  /// added since the last one - is only recorded. That is learning what is
+  /// already there, not news: the user saw the repository arrive. And a
+  /// record only ever grows, so a plugin list that fails to download for a
+  /// launch does not make its plugins new again when it is back.
+  Future<Map<String, List<String>>> _findNewPlugins() async {
+    final prefs = await SharedPreferences.getInstance();
+    final seen = _readUrlMap(prefs, seenPluginsKey);
+    final installed = <String>{
+      for (final plugin in state.installedPlugins) plugin.packageName,
+    };
+    final found = <String, List<String>>{};
+
+    for (final repo in state.repositories) {
+      final listed = state.availablePlugins[repo.url];
+      if (listed == null) continue;
+      final before = seen[repo.url];
+      final known = <String>{...?before};
+      final names = <String>[];
+      for (final plugin in listed) {
+        final unseen = known.add(plugin.packageName);
+        if (unseen &&
+            before != null &&
+            !installed.contains(plugin.packageName)) {
+          names.add(plugin.name);
+        }
+      }
+      seen[repo.url] = known.toList();
+      if (names.isNotEmpty) (found[repo.name] ??= <String>[]).addAll(names);
+    }
+
+    // A repository the user removed takes its record with it.
+    final saved = _savedRepoUrls(prefs).toSet();
+    seen.removeWhere((url, _) => !saved.contains(url));
+    await _writeUrlMap(prefs, seenPluginsKey, seen);
+    return found;
+  }
+
+  /// Records that the user follows [url], and what it lists now.
+  Future<void> _recordCollection(String url, List<String> listed) async {
+    final prefs = await SharedPreferences.getInstance();
+    final followed = _readUrlMap(prefs, collectionsKey);
+    followed[url] = listed;
+    await _writeUrlMap(prefs, collectionsKey, followed);
+  }
+
+  static List<String> _savedRepoUrls(SharedPreferences prefs) =>
+      prefs.getStringList(repoUrlsKey) ?? const <String>[];
+
+  static Set<String> _removedRepoUrls(SharedPreferences prefs) => <String>{
+    ...?prefs.getStringList(removedRepoUrlsKey),
+  };
+
+  /// A map of URL to strings, stored as JSON under [key]; empty when there
+  /// is none or it cannot be read.
+  static Map<String, List<String>> _readUrlMap(
+    SharedPreferences prefs,
+    String key,
+  ) {
+    final raw = prefs.getString(key);
+    if (raw == null) return <String, List<String>>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return <String, List<String>>{};
+      return <String, List<String>>{
+        for (final entry in decoded.entries)
+          if (entry.value is List)
+            '${entry.key}': <String>[
+              for (final value in entry.value as List)
+                if (value is String) value,
+            ],
+      };
+    } on FormatException {
+      return <String, List<String>>{};
+    }
+  }
+
+  static Future<void> _writeUrlMap(
+    SharedPreferences prefs,
+    String key,
+    Map<String, List<String>> map,
+  ) => prefs.setString(key, jsonEncode(map));
+
+  /// Records which installed plugins have a newer version published, in
+  /// [ExtensionsState.availableUpdates]. Installs nothing itself.
+  ///
+  /// Finding and installing are separate steps: [autoUpdate] calls
+  /// [installAvailableUpdates] after this, and the Extensions screen's
+  /// per-plugin update button renders off the same map for anything that did
+  /// not go in.
   ///
   /// Returns the display names of the plugins with an update waiting.
   Future<List<String>> checkForUpdates() async {
@@ -407,9 +519,19 @@ class ExtensionsController extends _$ExtensionsController {
     return updates.values.map((plugin) => plugin.name).toList();
   }
 
-  Future<void> addRepository(String url, {Set<String>? visitedUrls}) async {
+  Future<void> addRepository(String url, {Set<String>? visitedUrls}) =>
+      _addRepository(url, visitedUrls ?? <String>{}, background: false);
+
+  /// [background] is for additions nobody asked for in the moment - the
+  /// repositories a collection newly lists, found on launch: a failure is
+  /// logged and skipped instead of put on screen, and a repository the user
+  /// has, or removed, is left as it is.
+  Future<void> _addRepository(
+    String url,
+    Set<String> visitedUrls, {
+    required bool background,
+  }) async {
     // Cycle Detection
-    visitedUrls ??= {};
     if (visitedUrls.contains(url)) {
       if (kDebugMode) {
         debugPrint("Recursion detected: skipping repeated repo $url");
@@ -436,8 +558,21 @@ class ExtensionsController extends _$ExtensionsController {
               "Repo ${repo.name} contains ${repo.includedRepos.length} included repos",
             );
           }
+          // Followed from now on: every launch reads it again, for the
+          // repositories it lists later.
+          await _recordCollection(url, repo.includedRepos);
+          final prefs = await SharedPreferences.getInstance();
           for (final subRepoUrl in repo.includedRepos) {
-            await addRepository(subRepoUrl, visitedUrls: visitedUrls);
+            if (background &&
+                (_savedRepoUrls(prefs).contains(subRepoUrl) ||
+                    _removedRepoUrls(prefs).contains(subRepoUrl))) {
+              continue;
+            }
+            await _addRepository(
+              subRepoUrl,
+              visitedUrls,
+              background: background,
+            );
           }
 
           // If the repo is PURELY a container (no plugin of its own),
@@ -465,6 +600,11 @@ class ExtensionsController extends _$ExtensionsController {
             urls.add(url);
             await prefs.setStringList(repoUrlsKey, urls);
           }
+          // Added on purpose, so no longer one the user removed.
+          final removed = prefs.getStringList(removedRepoUrlsKey);
+          if (removed != null && removed.remove(url)) {
+            await prefs.setStringList(removedRepoUrlsKey, removed);
+          }
         }
 
         final plugins = await repositoryService.getRepoPlugins(repo);
@@ -482,7 +622,7 @@ class ExtensionsController extends _$ExtensionsController {
         );
       } else {
         if (kDebugMode) debugPrint("Failed to parse repository at $url");
-        if (visitedUrls.length == 1) {
+        if (visitedUrls.length == 1 && !background) {
           state = ExtensionsError(
             "Failed to parse repository",
             installedPlugins: state.installedPlugins,
@@ -502,6 +642,17 @@ class ExtensionsController extends _$ExtensionsController {
         }
       }
     } catch (e) {
+      if (background) {
+        if (kDebugMode) debugPrint('Could not add repository $url: $e');
+        state = ExtensionsSuccess(
+          installedPlugins: state.installedPlugins,
+          repositories: state.repositories,
+          availablePlugins: state.availablePlugins,
+          availableUpdates: state.availableUpdates,
+          installingPlugins: state.installingPlugins,
+        );
+        return;
+      }
       state = ExtensionsError(
         e.toString(),
         installedPlugins: state.installedPlugins,
@@ -513,8 +664,11 @@ class ExtensionsController extends _$ExtensionsController {
     }
   }
 
+  /// Removes the repository at [url] and uninstalls the plugins installed
+  /// from it, as the confirmation dialog tells the user it will.
   Future<void> removeRepository(String url) async {
     try {
+      final removed = state.repositories.where((r) => r.url == url).firstOrNull;
       final currentRepos = List<ExtensionRepository>.from(state.repositories);
       currentRepos.removeWhere((r) => r.url == url);
 
@@ -523,7 +677,8 @@ class ExtensionsController extends _$ExtensionsController {
       );
       currentAvailable.remove(url);
 
-      // Update State with Repo Removed (keeping installedPlugins intact)
+      // Update State with Repo Removed. The installed list follows below,
+      // once the repository's plugins are uninstalled.
       state = ExtensionsSuccess(
         installedPlugins: state.installedPlugins,
         repositories: currentRepos,
@@ -537,6 +692,10 @@ class ExtensionsController extends _$ExtensionsController {
       final urls = prefs.getStringList(repoUrlsKey) ?? [];
       urls.remove(url);
       await prefs.setStringList(repoUrlsKey, urls);
+      await _rememberRemoval(prefs, url, urls);
+      if (removed != null) {
+        await _uninstallPluginsFrom(removed, remaining: currentRepos);
+      }
 
       // Reload installed plugins to update the UI
       await loadInstalledPlugins();
@@ -552,11 +711,122 @@ class ExtensionsController extends _$ExtensionsController {
     }
   }
 
+  /// Uninstalls every plugin installed from [repo], which an install records
+  /// as the repository's id beside the plugin. Plugins installed from other
+  /// repositories stay, even ones [repo] lists too - and so does everything
+  /// when the same repository is still in [remaining] under another address,
+  /// as a raw GitHub link and its jsDelivr mirror would be.
+  ///
+  /// A plugin that will not delete is left installed, where the user can see
+  /// it and uninstall it; it does not keep the others.
+  Future<void> _uninstallPluginsFrom(
+    ExtensionRepository repo, {
+    required List<ExtensionRepository> remaining,
+  }) async {
+    final repoId = repo.packageName;
+    if (remaining.any((other) => other.packageName == repoId)) return;
+
+    final storage = ref.read(pluginStorageServiceProvider);
+    final gone = <String>{};
+    for (final plugin in await storage.listInstalledPlugins()) {
+      if (plugin.repositoryId != repoId) continue;
+      try {
+        await storage.deletePlugin(plugin);
+        gone.add(plugin.packageName);
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('Could not uninstall ${plugin.packageName}: $e');
+        }
+      }
+    }
+    if (gone.isEmpty) return;
+
+    // The installed list itself is re-read from disk by the caller.
+    state = ExtensionsSuccess(
+      installedPlugins: state.installedPlugins,
+      repositories: state.repositories,
+      availablePlugins: state.availablePlugins,
+      availableUpdates: <String, ExtensionPlugin>{
+        for (final entry in state.availableUpdates.entries)
+          if (!gone.contains(entry.key)) entry.key: entry.value,
+      },
+      installingPlugins: state.installingPlugins,
+    );
+  }
+
+  /// Notes that the user removed [url], so a collection that lists it does
+  /// not bring it back, and stops following every collection that leaves
+  /// with none of its repositories kept: the user has left it, and would
+  /// otherwise have no way to stop its new repositories arriving. [saved] is
+  /// the user's repositories after the removal.
+  Future<void> _rememberRemoval(
+    SharedPreferences prefs,
+    String url,
+    List<String> saved,
+  ) async {
+    final removed = prefs.getStringList(removedRepoUrlsKey) ?? <String>[];
+    if (!removed.contains(url)) {
+      removed.add(url);
+      await prefs.setStringList(removedRepoUrlsKey, removed);
+    }
+
+    final followed = _readUrlMap(prefs, collectionsKey);
+    final before = followed.length;
+    // A collection inside another is kept by what it lists, and keeps its
+    // parent while it is followed, so leaving one can leave the next.
+    var gone = <String>{url};
+    while (gone.isNotEmpty) {
+      final left = <String>{
+        for (final MapEntry(key: collection, value: listed) in followed.entries)
+          if (listed.any(gone.contains) &&
+              !listed.any(
+                (entry) => saved.contains(entry) || followed.containsKey(entry),
+              ))
+            collection,
+      };
+      followed.removeWhere((collection, _) => left.contains(collection));
+      gone = left;
+    }
+    if (followed.length != before) {
+      await _writeUrlMap(prefs, collectionsKey, followed);
+    }
+  }
+
   Future<void> installPlugin(ExtensionPlugin plugin) async {
     await installPlugins([plugin]);
   }
 
-  Future<void> installPlugins(List<ExtensionPlugin> plugins) async {
+  /// Installs every update [checkForUpdates] recorded and returns the display
+  /// names of the ones that went in.
+  ///
+  /// Plugins are kept current without a trip to the Extensions screen - the
+  /// launch check calls this straight after finding them, and the user is
+  /// told afterwards what changed - the way Nuvio scrapers already are.
+  ///
+  /// One plugin at a time, each on its own: [installPlugins] gives up on the
+  /// whole batch at the first exception, and one plugin with a dead download
+  /// must not keep the rest back. Quietly, too: a background update that
+  /// fails leaves its entry in [ExtensionsState.availableUpdates] for the
+  /// update button to retry, instead of raising the Extensions screen's error
+  /// dialog over whatever the user is doing.
+  Future<List<String>> installAvailableUpdates() async {
+    final updated = <String>[];
+    for (final plugin in state.availableUpdates.values.toList()) {
+      await installPlugins([plugin], quiet: true);
+      if (!state.availableUpdates.containsKey(plugin.packageName)) {
+        updated.add(plugin.name);
+      }
+    }
+    return updated;
+  }
+
+  /// [quiet] is for installs nobody asked for in the moment: a failure clears
+  /// the spinner and leaves the plugin as it was, rather than putting the
+  /// controller in [ExtensionsError].
+  Future<void> installPlugins(
+    List<ExtensionPlugin> plugins, {
+    bool quiet = false,
+  }) async {
     final newInstalling = Set<String>.from(state.installingPlugins);
     for (final p in plugins) {
       newInstalling.add(p.packageName);
@@ -646,6 +916,17 @@ class ExtensionsController extends _$ExtensionsController {
       final currentInstalling = Set<String>.from(state.installingPlugins);
       for (final p in plugins) {
         currentInstalling.remove(p.packageName);
+      }
+      if (quiet) {
+        if (kDebugMode) debugPrint('Background plugin install failed: $e');
+        state = ExtensionsSuccess(
+          installedPlugins: state.installedPlugins,
+          repositories: state.repositories,
+          availablePlugins: state.availablePlugins,
+          availableUpdates: state.availableUpdates,
+          installingPlugins: currentInstalling,
+        );
+        return;
       }
       state = ExtensionsError(
         e.toString(),

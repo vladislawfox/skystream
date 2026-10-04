@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart'
@@ -15,6 +16,7 @@ import 'vlc_player_controller_internals.dart';
 import 'vlc_player_error.dart';
 import 'vlc_player_value.dart';
 import 'vlc_video_fit.dart';
+import 'vlc_video_geometry.dart';
 
 /// Playlist repeat behavior used by `VlcPlayerController.setPlaylist`.
 enum VlcPlaylistLoopMode {
@@ -128,6 +130,19 @@ abstract class VlcPlayerController extends ValueNotifier<VlcPlayerValue> {
   /// initial seek position. This clears any active playlist.
   Future<void> setMedia(VlcMediaSource source, {bool autoPlay = false});
 
+  /// Caps the reported [VlcPlayerValue.duration] at [cap], for a media whose
+  /// length libVLC gets wrong; null lifts the cap from the next report on.
+  ///
+  /// libVLC reports an HLS master's length as that of the longest playlist it
+  /// has loaded, alternative renditions included, selected or not. A subtitle
+  /// file wrapped as one segment that claims 99,999 seconds therefore makes a
+  /// fifty-minute episode read 27:46:39. A host that has measured the video's
+  /// own playlist passes that length here.
+  ///
+  /// The cap only ever shortens: a shorter report, or an unknown one, is
+  /// published as it is. It applies at once and lasts until the next media.
+  void setDurationCap(Duration? cap);
+
   /// Loads a playlist and selects [initialIndex].
   ///
   /// [sources] must be non-empty. When [autoAdvance] is true, the controller
@@ -193,8 +208,44 @@ abstract class VlcPlayerController extends ValueNotifier<VlcPlayerValue> {
 
   /// Seeks to [position].
   ///
-  /// [position] must be non-negative.
+  /// [position] must be non-negative. [pendingSeekTarget] moves to it at once.
+  /// The engine is sent it at once too, unless another seek went out within
+  /// the last [seekMergeWindow] - then the two are merged, and the engine is
+  /// sent the latest target once the seeks stop arriving for a window. The
+  /// returned future completes once the seek is sent or, merged, taken.
   Future<void> seekTo(Duration position);
+
+  /// How long after a seek has gone to the engine further seeks are held and
+  /// merged into one.
+  ///
+  /// libVLC answers every seek by flushing its decoders and, whenever the
+  /// target is not already in its read-ahead, by dropping that and asking the
+  /// network for the stream again - over a new connection on HTTP/1.1. It
+  /// merges queued seeks only while one is still being processed (VLC 3.0.21
+  /// `src/input/input.c`), so six presses of an arrow key, six taps or six
+  /// bumps of a gamepad shoulder button became three full resets, a frame
+  /// from each flashing past.
+  static const Duration seekMergeWindow = Duration(milliseconds: 400);
+
+  /// Where the last seek is going, until the engine gets there; null when no
+  /// seek is on its way.
+  ///
+  /// libVLC keeps reporting the position it left while a seek repositions the
+  /// demuxer and refills the buffer - seconds, on a slow network file - so a
+  /// scrubber drawn from [VlcPlayerValue.position] alone springs back to where
+  /// the viewer was and jumps forward later. Media3 and the browsers report a
+  /// seek's target from the moment it is asked for; a scrubber or a clock that
+  /// wants to behave the same shows this while it is set.
+  /// [VlcPlayerValue.position] itself stays the engine's own throughout, for
+  /// everything that must only ever see a place playback reached.
+  ///
+  /// Set by [seekTo]. Cleared when the engine's position arrives at it - a
+  /// little short counts, since seeks land on a keyframe or a segment boundary
+  /// - or goes past it in the seek's direction; when the engine can no longer
+  /// get there (stopped, ended, failed, new media); and when playback carries
+  /// on somewhere else without ever arriving, which is an engine that did not
+  /// take the seek at all.
+  ValueListenable<Duration?> get pendingSeekTarget;
 
   /// How many seeks have been asked for on this controller.
   ///
@@ -278,6 +329,21 @@ abstract class VlcPlayerController extends ValueNotifier<VlcPlayerValue> {
 
 const MethodChannel _methodChannel = MethodChannel('vlc_player');
 
+/// How far short of a seek's target the engine may land and count as there:
+/// seeks land on a keyframe or a segment boundary, a little before the
+/// millisecond asked for. See `_seekLanded`.
+const Duration _kSeekLandsShortBy = Duration(seconds: 3);
+
+/// How far past a seek's target the engine may land and count as there.
+const Duration _kSeekLandsLongBy = Duration(milliseconds: 750);
+
+/// How many published positions in a row may move without arriving before a
+/// seek is taken as not having happened. Two or three can be reports already
+/// on their way when the seek was asked - an earlier step of a chain landing,
+/// a tick from the old position - so a handful more than that: about three
+/// seconds of playback carrying on at the rate positions are published.
+const int _kSeekIgnoredAfterMoves = 12;
+
 class _VlcPlayerController extends VlcPlayerController
     implements VlcPlayerControllerInternals {
   _VlcPlayerController({
@@ -305,6 +371,10 @@ class _VlcPlayerController extends VlcPlayerController
     }
     _pendingMediaSource = mediaSource;
     _pendingAutoPlay = autoPlay;
+    // Judged against what is published, not the raw snapshot: a landing held
+    // back by the event throttle must not clear the target while the old
+    // position is still the one on screen.
+    addListener(_watchSeekLanding);
   }
 
   @override
@@ -392,6 +462,14 @@ class _VlcPlayerController extends VlcPlayerController
   Timer? _eventThrottleTimer;
   VlcPlayerValue? _pendingThrottledValue;
 
+  /// The host's measured length for the current media - see [setDurationCap].
+  Duration? _durationCap;
+
+  /// What the widget last asked libVLC to crop or stretch to; see
+  /// [setVideoGeometry]. Lives on the controller rather than the native player
+  /// so a player created later - a reattach - starts with it.
+  VlcVideoGeometry _videoGeometry = VlcVideoGeometry.none;
+
   /// Counts down [stallIndicatorDelay] from the first snapshot whose position
   /// matched the one before it. Armed only while the engine claims to be
   /// running, and disarmed by any movement of the clock.
@@ -403,6 +481,22 @@ class _VlcPlayerController extends VlcPlayerController
   /// the published position lags the engine by up to an interval, and a stall
   /// judged against it would see a frozen clock at every flush.
   Duration? _lastNativePosition;
+
+  final ValueNotifier<Duration?> _pendingSeekTarget = ValueNotifier<Duration?>(
+    null,
+  );
+
+  /// The published position the pending seek set out from - in a chain of
+  /// steps, the previous step's target - so an earlier step landing late is
+  /// not taken for this one.
+  Duration? _seekOrigin;
+
+  /// The published position when the landing was last checked, and how many
+  /// checks in a row have found it moving without arriving. A seek on its way
+  /// holds the engine's position still; one that moves and moves without
+  /// arriving is playback carrying on somewhere the seek never took it.
+  Duration? _seekLastSeen;
+  int _seekMovesWithoutLanding = 0;
   bool _isDisposed = false;
 
   @override
@@ -465,6 +559,11 @@ class _VlcPlayerController extends VlcPlayerController
       'vlc_player/events/$viewId',
     ).receiveBroadcastStream().listen(_handleEvent, onError: _handleEventError);
     _ensureLifecycleListener();
+    // Ahead of the media, so its first frame is already the right shape. A
+    // new native player has no crop and no aspect of its own, so a fit that
+    // needs neither costs no call.
+    if (_videoGeometry != VlcVideoGeometry.none) await _sendVideoGeometry();
+    _ensureNotDisposed();
 
     final pendingMediaSource = _pendingMediaSource;
     if (pendingMediaSource != null) {
@@ -519,6 +618,11 @@ class _VlcPlayerController extends VlcPlayerController
       'vlc_player/events/$viewId',
     ).receiveBroadcastStream().listen(_handleEvent, onError: _handleEventError);
     _ensureLifecycleListener();
+    // Ahead of the media, so its first frame is already the right shape. A
+    // new native player has no crop and no aspect of its own, so a fit that
+    // needs neither costs no call.
+    if (_videoGeometry != VlcVideoGeometry.none) await _sendVideoGeometry();
+    _ensureNotDisposed();
 
     final pendingMediaSource = _pendingMediaSource;
     if (pendingMediaSource != null) {
@@ -707,6 +811,48 @@ class _VlcPlayerController extends VlcPlayerController
       _pendingAutoPlay = previousAutoPlay;
       rethrow;
     }
+  }
+
+  @override
+  void setDurationCap(Duration? cap) {
+    // Measured off the main path, so it can land after the host let go.
+    if (_isDisposed) return;
+    _durationCap = cap;
+    final pending = _pendingThrottledValue;
+    if (pending != null) _pendingThrottledValue = _capDuration(pending);
+    final capped = _capDuration(value);
+    if (capped != value) value = capped;
+  }
+
+  @override
+  @internal
+  void setVideoGeometry(VlcVideoGeometry geometry) {
+    if (_isDisposed || geometry == _videoGeometry) return;
+    _videoGeometry = geometry;
+    if (_viewId != null) unawaited(_sendVideoGeometry());
+  }
+
+  /// Best effort: a backend that does not know the call still plays, only
+  /// with subtitles laid out for the whole picture.
+  Future<void> _sendVideoGeometry() async {
+    final viewId = _viewId;
+    if (viewId == null) return;
+    final geometry = _videoGeometry;
+    try {
+      await _invokeNative<void>('setVideoGeometry', <String, Object?>{
+        'viewId': viewId,
+        'crop': geometry.crop,
+        'aspectRatio': geometry.aspectRatio,
+      });
+    } catch (error) {
+      if (kDebugMode) debugPrint('vlc_player: setVideoGeometry failed: $error');
+    }
+  }
+
+  VlcPlayerValue _capDuration(VlcPlayerValue next) {
+    final cap = _durationCap;
+    if (cap == null || next.duration <= cap) return next;
+    return next.copyWith(duration: cap);
   }
 
   @override
@@ -905,6 +1051,11 @@ class _VlcPlayerController extends VlcPlayerController
     // startup spinner's job, not this one's.
     _hasPlayedSinceMedia = false;
     _cancelStallTimer();
+    // A seek's target belongs to the media it was asked of.
+    _clearPendingSeek();
+    _dropMergedSeek();
+    // A measured length belongs to the media it was measured on.
+    _durationCap = null;
     // Opening while the app is away must not start audio nobody can stop:
     // there is no notification and no lock-screen control behind this yet.
     // The policy's claim is staked here so the return trip resumes it.
@@ -1016,9 +1167,157 @@ class _VlcPlayerController extends VlcPlayerController
       _lastNativePosition = position;
       _armStallTimer();
     }
-    return _invoke('seekTo', <String, Object?>{
-      'position': position.inMilliseconds,
-    });
+    _seekOrigin = _pendingSeekTarget.value ?? value.position;
+    _seekLastSeen = value.position;
+    _seekMovesWithoutLanding = 0;
+    _pendingSeekTarget.value = position;
+    return _sendOrMergeSeek(position);
+  }
+
+  /// When a seek last went to the engine, and where to.
+  ///
+  /// A time rather than an open timer, so a seek on its own leaves nothing
+  /// running behind it; a timer exists only while a merged seek waits.
+  DateTime? _seekSentAt;
+  Duration? _seekSentTarget;
+
+  /// The latest seek asked for inside the window, and the timer that sends it
+  /// once the seeks stop arriving.
+  Duration? _mergedSeek;
+  Timer? _mergedSeekTimer;
+
+  /// The first seek of a burst goes at once; the rest move the target and
+  /// restart the window. See [VlcPlayerController.seekMergeWindow].
+  ///
+  /// A merged seek completes as soon as it is taken. Its caller has nothing
+  /// to wait for - the target is already published - and holding it for the
+  /// window would hang it outright wherever time does not advance on its own.
+  Future<void> _sendOrMergeSeek(Duration position) {
+    const window = VlcPlayerController.seekMergeWindow;
+    final now = clock.now();
+    final sentAt = _seekSentAt;
+    final inBurst =
+        _mergedSeekTimer != null ||
+        (sentAt != null && now.difference(sentAt) < window);
+    if (!inBurst) {
+      _seekSentAt = now;
+      _seekSentTarget = position;
+      return _sendSeek(position);
+    }
+    _mergedSeek = position;
+    _mergedSeekTimer?.cancel();
+    _mergedSeekTimer = Timer(window, _sendMergedSeek);
+    return Future<void>.value();
+  }
+
+  void _sendMergedSeek() {
+    _mergedSeekTimer = null;
+    final target = _mergedSeek;
+    _mergedSeek = null;
+    // A burst that ends where it began - right, right, left - has nothing to
+    // send: the engine already has that target, and a second seek there
+    // would flush and refill for nothing.
+    if (target == null || target == _seekSentTarget) return;
+    // Sending restarts the window, so a burst that carries on straight after
+    // is merged again rather than sent press by press.
+    _seekSentAt = clock.now();
+    _seekSentTarget = target;
+    // The engine only has the seek from now, so the landing watcher's count
+    // of reports that moved without arriving starts here, not at the press.
+    _seekMovesWithoutLanding = 0;
+    unawaited(_sendSeek(target));
+  }
+
+  /// Forgets a merged seek that has not gone out, and the last one that did:
+  /// both belong to media that is going away, and the first seek on the next
+  /// one goes at once.
+  void _dropMergedSeek() {
+    _mergedSeekTimer?.cancel();
+    _mergedSeekTimer = null;
+    _mergedSeek = null;
+    _seekSentAt = null;
+    _seekSentTarget = null;
+  }
+
+  Future<void> _sendSeek(Duration position) =>
+      _invoke('seekTo', <String, Object?>{'position': position.inMilliseconds});
+
+  @override
+  ValueListenable<Duration?> get pendingSeekTarget => _pendingSeekTarget;
+
+  /// Clears [pendingSeekTarget] once the published value shows the engine has
+  /// arrived, cannot arrive, or has carried on without the seek.
+  void _watchSeekLanding() {
+    final target = _pendingSeekTarget.value;
+    final origin = _seekOrigin;
+    if (target == null || origin == null) return;
+    final published = value;
+    if (!_canStillLand(published.state) ||
+        _seekLanded(published.position, target: target, origin: origin)) {
+      _clearPendingSeek();
+      return;
+    }
+    final last = _seekLastSeen;
+    _seekLastSeen = published.position;
+    if (last == null || published.position == last) {
+      // Still: the engine is repositioning or refilling, which is what a seek
+      // on its way looks like.
+      _seekMovesWithoutLanding = 0;
+      return;
+    }
+    _seekMovesWithoutLanding += 1;
+    if (_seekMovesWithoutLanding >= _kSeekIgnoredAfterMoves) {
+      _clearPendingSeek();
+    }
+  }
+
+  /// Whether [position] shows the engine has taken the seek from [origin] to
+  /// [target]: it is at the target - a little short allowed, because seeks
+  /// land on a keyframe or a segment boundary - or it has gone past the
+  /// target in the direction of the seek.
+  ///
+  /// Anything else holds, and that is what matters in a chain of D-pad steps:
+  /// the report of an earlier step landing is short of this one's target, not
+  /// at it.
+  static bool _seekLanded(
+    Duration position, {
+    required Duration target,
+    required Duration origin,
+  }) {
+    final asked = target - origin;
+    // Short by at most half the step, so a report from where a short step
+    // set out cannot pass for its landing.
+    final half = asked.abs() ~/ 2;
+    final shortBy = half < _kSeekLandsShortBy ? half : _kSeekLandsShortBy;
+    final early = asked.isNegative ? _kSeekLandsLongBy : shortBy;
+    final late = asked.isNegative ? shortBy : _kSeekLandsLongBy;
+    if (position >= target - early && position <= target + late) return true;
+    if (asked == Duration.zero) return false;
+    final travelled = position - origin;
+    return travelled.isNegative == asked.isNegative &&
+        travelled.abs() >= asked.abs();
+  }
+
+  /// A paused seek still lands; a stopped, ended, errored or idle engine
+  /// never will.
+  static bool _canStillLand(VlcPlaybackState state) {
+    return switch (state) {
+      VlcPlaybackState.opening ||
+      VlcPlaybackState.buffering ||
+      VlcPlaybackState.playing ||
+      VlcPlaybackState.paused => true,
+      VlcPlaybackState.idle ||
+      VlcPlaybackState.stopped ||
+      VlcPlaybackState.ended ||
+      VlcPlaybackState.error => false,
+    };
+  }
+
+  void _clearPendingSeek() {
+    _seekOrigin = null;
+    _seekLastSeen = null;
+    _seekMovesWithoutLanding = 0;
+    _pendingSeekTarget.value = null;
   }
 
   @override
@@ -1272,7 +1571,7 @@ class _VlcPlayerController extends VlcPlayerController
     }
     final previousValue = _pendingThrottledValue ?? value;
     final nextValue = _observeStall(
-      VlcPlayerValue.fromEvent(event, previousValue),
+      _capDuration(VlcPlayerValue.fromEvent(event, previousValue)),
     );
     _setValueFromEvent(previousValue, nextValue);
     _applyInterruption(previousValue.interruption, nextValue.interruption);
@@ -1519,6 +1818,9 @@ class _VlcPlayerController extends VlcPlayerController
     _eventsSubscription = null;
     _cancelPendingThrottledValue();
     _cancelStallTimer();
+    _clearPendingSeek();
+    _dropMergedSeek();
+    _pendingSeekTarget.dispose();
     if (viewId != null) {
       unawaited(_disposeNativeView(viewId));
     }

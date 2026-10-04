@@ -1,22 +1,16 @@
-/// What the app is allowed to do to the user's plugins, and their data plan,
-/// on a launch they did not ask anything of.
+/// What a launch does to the user's plugins.
 ///
-/// The startup path used to be: first post-frame callback -> `ensureInitialized`
-/// -> one HTTP round trip per repository *in series* -> `checkForUpdates`, which
-/// downloaded and installed every outdated plugin on the spot and then told the
-/// user it had. Three separate problems in one line of `main.dart`:
+/// The latest plugins are what the app's core job - finding something to
+/// play - runs on, so every launch brings them up to date, on any connection,
+/// however recently the last launch did. It happens in two steps. The check
+/// *finds* updates and records them in `availableUpdates`; the launch then
+/// installs what it found, one plugin at a time, and names the ones that went
+/// in. A plugin that will not install is left offered on the Extensions
+/// screen, and does not hold the others back.
 ///
-///  * it raced the home screen for bandwidth and main-isolate time, on every
-///    cold start, with no interval and no gate;
-///  * on a phone on cellular it spent the user's money unannounced;
-///  * it put third-party executable JavaScript on the device without anyone
-///    agreeing to it.
-///
-/// The contract now: the check *finds* updates and records them in
-/// `availableUpdates` - which the Extensions screen already renders a per-plugin
-/// update button off - and installs nothing. And it declines to run at all
-/// when there is nothing to find, when it ran recently, or when the connection
-/// is metered.
+/// For a while the check ran at most every six hours, never on a metered
+/// connection, and installed nothing without the user going to the Extensions
+/// screen for it. That left users on stale scrapers, and is gone.
 library;
 
 import 'dart:io';
@@ -39,11 +33,15 @@ import 'package:skystream/features/extensions/providers/extensions_controller.da
 const String _repoUrl = 'https://example.test/repo.json';
 const String _packageName = 'com.example.superstream';
 
-ExtensionPlugin _plugin(int version) => ExtensionPlugin(
-  packageName: _packageName,
-  name: 'SuperStream',
+ExtensionPlugin _plugin(
+  int version, {
+  String packageName = _packageName,
+  String name = 'SuperStream',
+}) => ExtensionPlugin(
+  packageName: packageName,
+  name: name,
   repositoryId: 'com.example',
-  sourceUrl: 'https://example.test/superstream-v$version.sky',
+  sourceUrl: 'https://example.test/$packageName-v$version.sky',
   version: version,
 );
 
@@ -53,10 +51,14 @@ class _FakeRepositoryService extends RepositoryService {
   _FakeRepositoryService({
     this.online = const <ExtensionPlugin>[],
     this.fetchDelay = Duration.zero,
+    this.brokenDownloads = const <String>{},
   }) : super(Dio());
 
   final List<ExtensionPlugin> online;
   final Duration fetchDelay;
+
+  /// Source URLs whose download throws, as a dead mirror does.
+  final Set<String> brokenDownloads;
 
   final List<String> fetchCalls = <String>[];
   final List<String> downloadCalls = <String>[];
@@ -90,21 +92,27 @@ class _FakeRepositoryService extends RepositoryService {
 
   /// A real file, so the ablation's install path runs to completion instead of
   /// bailing out early and looking like the fix.
+  /// A real file, so the install path runs to completion. It carries the URL
+  /// it came from, which is how the fake store knows what it is installing.
   @override
   Future<File?> downloadPlugin(String url) async {
     downloadCalls.add(url);
+    if (brokenDownloads.contains(url)) {
+      throw const SocketException('Connection reset by peer');
+    }
     final file = File(
       '${Directory.systemTemp.createTempSync('sky_plugin').path}/plugin.sky',
     );
-    await file.writeAsString('not really a zip');
+    await file.writeAsString(url);
     return file;
   }
 }
 
 class _FakePluginStorageService extends PluginStorageService {
-  _FakePluginStorageService(this._installed);
+  _FakePluginStorageService(this._installed, this._online);
 
   List<ExtensionPlugin> _installed;
+  final List<ExtensionPlugin> _online;
   final List<String> installCalls = <String>[];
 
   @override
@@ -117,10 +125,16 @@ class _FakePluginStorageService extends PluginStorageService {
     String? explicitRepoId,
   ) async {
     installCalls.add(filePath);
+    final url = await File(filePath).readAsString();
+    final plugin = _online.firstWhere((p) => p.sourceUrl == url);
     // What a real install does: the newer plugin replaces the older one on
     // disk, so the next listing reports it.
-    _installed = <ExtensionPlugin>[_plugin(2)];
-    return _plugin(2);
+    _installed = <ExtensionPlugin>[
+      for (final p in _installed)
+        if (p.packageName != plugin.packageName) p,
+      plugin,
+    ];
+    return plugin;
   }
 }
 
@@ -151,15 +165,19 @@ void main() {
     List<ExtensionPlugin> installed = const <ExtensionPlugin>[],
     List<ExtensionPlugin> online = const <ExtensionPlugin>[],
     Map<String, Object> prefs = const <String, Object>{},
-    bool metered = false,
     Duration fetchDelay = Duration.zero,
+    Set<String> brokenDownloads = const <String>{},
   }) {
     SharedPreferences.setMockInitialValues(<String, Object>{
       ExtensionsController.repoUrlsKey: <String>[_repoUrl],
       ...prefs,
     });
-    repos = _FakeRepositoryService(online: online, fetchDelay: fetchDelay);
-    plugins = _FakePluginStorageService(installed);
+    repos = _FakeRepositoryService(
+      online: online,
+      fetchDelay: fetchDelay,
+      brokenDownloads: brokenDownloads,
+    );
+    plugins = _FakePluginStorageService(installed, online);
 
     final container = ProviderContainer(
       overrides: [
@@ -167,42 +185,77 @@ void main() {
         pluginStorageServiceProvider.overrideWithValue(plugins),
         settingsRepositoryProvider.overrideWithValue(_FakeSettingsRepository()),
         extensionManagerProvider.overrideWith(_NoopExtensionManager.new),
-        meteredConnectionProvider.overrideWithValue(() async => metered),
       ],
     );
     addTearDown(container.dispose);
     return container;
   }
 
-  test('an available update is recorded, not installed', () async {
+  test('the check only finds updates; installing is its own step', () async {
     final container = boot(
       installed: <ExtensionPlugin>[_plugin(1)],
       online: <ExtensionPlugin>[_plugin(2)],
     );
 
-    final pending = await container
-        .read(extensionsControllerProvider.notifier)
-        .autoCheckForUpdates();
+    final controller = container.read(extensionsControllerProvider.notifier);
+    await controller.ensureInitialized();
+    final pending = await controller.checkForUpdates();
 
-    // The whole point: the bundle was never fetched and never written.
-    expect(
-      repos.downloadCalls,
-      isEmpty,
-      reason: 'a JavaScript bundle was downloaded without being asked for',
-    );
+    // Found, and nothing downloaded yet: the install is a separate step, so a
+    // caller can check without installing.
+    expect(repos.downloadCalls, isEmpty);
     expect(plugins.installCalls, isEmpty);
 
     final state = container.read(extensionsControllerProvider);
-    expect(
-      state.installedPlugins.single.version,
-      1,
-      reason: 'the installed plugin was replaced behind the user',
-    );
-    // ...but the offer is on the table, which is what the Extensions screen's
-    // per-plugin update button renders off.
+    expect(state.installedPlugins.single.version, 1);
     expect(state.availableUpdates[_packageName]?.version, 2);
     expect(pending, <String>['SuperStream']);
   });
+
+  test('what the check found is installed, and named', () async {
+    final container = boot(
+      installed: <ExtensionPlugin>[_plugin(1)],
+      online: <ExtensionPlugin>[_plugin(2)],
+    );
+    final report = await container
+        .read(extensionsControllerProvider.notifier)
+        .autoUpdate();
+
+    expect(report.updated, <String>['SuperStream']);
+    expect(repos.downloadCalls, <String>[_plugin(2).sourceUrl]);
+    final state = container.read(extensionsControllerProvider);
+    expect(state.installedPlugins.single.version, 2);
+    expect(state.availableUpdates, isEmpty);
+  });
+
+  test(
+    'a plugin that will not install stays offered and holds nobody back',
+    () async {
+      final broken = _plugin(2, packageName: 'com.example.a', name: 'Alpha');
+      final fine = _plugin(2, packageName: 'com.example.b', name: 'Bravo');
+      final container = boot(
+        installed: <ExtensionPlugin>[
+          _plugin(1, packageName: 'com.example.a', name: 'Alpha'),
+          _plugin(1, packageName: 'com.example.b', name: 'Bravo'),
+        ],
+        online: <ExtensionPlugin>[broken, fine],
+        brokenDownloads: <String>{broken.sourceUrl},
+      );
+      final report = await container
+          .read(extensionsControllerProvider.notifier)
+          .autoUpdate();
+
+      expect(report.updated, <String>['Bravo']);
+      final state = container.read(extensionsControllerProvider);
+      expect(
+        state,
+        isNot(isA<ExtensionsError>()),
+        reason: 'a background update raised the Extensions error dialog',
+      );
+      expect(state.availableUpdates.keys, <String>['com.example.a']);
+      expect(state.installingPlugins, isEmpty);
+    },
+  );
 
   test('nothing newer means nothing offered', () async {
     final container = boot(
@@ -210,11 +263,11 @@ void main() {
       online: <ExtensionPlugin>[_plugin(2)],
     );
 
-    final pending = await container
+    final report = await container
         .read(extensionsControllerProvider.notifier)
-        .autoCheckForUpdates();
+        .autoUpdate();
 
-    expect(pending, isEmpty);
+    expect(report.updated, isEmpty);
     expect(
       container.read(extensionsControllerProvider).availableUpdates,
       isEmpty,
@@ -222,76 +275,32 @@ void main() {
     expect(repos.downloadCalls, isEmpty);
   });
 
-  test('a metered connection is left alone', () async {
-    final container = boot(
-      installed: <ExtensionPlugin>[_plugin(1)],
-      online: <ExtensionPlugin>[_plugin(2)],
-      metered: true,
-    );
-
-    final pending = await container
-        .read(extensionsControllerProvider.notifier)
-        .autoCheckForUpdates();
-
-    expect(pending, isEmpty);
-    expect(
-      repos.fetchCalls,
-      isEmpty,
-      reason: 'a repository manifest was fetched over cellular',
-    );
-    // The timestamp is not moved either, so the next Wi-Fi launch still checks.
-    final store = await SharedPreferences.getInstance();
-    expect(store.getInt(ExtensionsController.lastAutoCheckKey), isNull);
-  });
-
-  test('a check inside the interval does not run again', () async {
-    final recent = DateTime.now().subtract(const Duration(hours: 1));
+  test('a launch straight after another still checks', () async {
+    // What an install that last checked a minute ago carries in its
+    // preferences, under the key the six-hour gate used to read.
+    final justNow = DateTime.now().subtract(const Duration(minutes: 1));
     final container = boot(
       installed: <ExtensionPlugin>[_plugin(1)],
       online: <ExtensionPlugin>[_plugin(2)],
       prefs: <String, Object>{
-        ExtensionsController.lastAutoCheckKey: recent.millisecondsSinceEpoch,
+        'extensions_last_update_check': justNow.millisecondsSinceEpoch,
       },
     );
 
+    final report = await container
+        .read(extensionsControllerProvider.notifier)
+        .autoUpdate();
+    expect(report.updated, <String>['SuperStream']);
+    expect(repos.fetchCalls, <String>[_repoUrl]);
+
+    // Nothing records the time of a check any more; there is nothing left to
+    // read it.
+    final store = await SharedPreferences.getInstance();
     expect(
-      await container
-          .read(extensionsControllerProvider.notifier)
-          .autoCheckForUpdates(),
-      isEmpty,
+      store.getInt('extensions_last_update_check'),
+      justNow.millisecondsSinceEpoch,
     );
-    expect(repos.fetchCalls, isEmpty);
   });
-
-  test(
-    'a check older than the interval runs, and re-stamps the clock',
-    () async {
-      final stale = DateTime.now().subtract(
-        ExtensionsController.autoCheckInterval + const Duration(minutes: 1),
-      );
-      final container = boot(
-        installed: <ExtensionPlugin>[_plugin(1)],
-        online: <ExtensionPlugin>[_plugin(2)],
-        prefs: <String, Object>{
-          ExtensionsController.lastAutoCheckKey: stale.millisecondsSinceEpoch,
-        },
-      );
-
-      expect(
-        await container
-            .read(extensionsControllerProvider.notifier)
-            .autoCheckForUpdates(),
-        <String>['SuperStream'],
-      );
-      expect(repos.fetchCalls, <String>[_repoUrl]);
-
-      final store = await SharedPreferences.getInstance();
-      expect(
-        store.getInt(ExtensionsController.lastAutoCheckKey),
-        greaterThan(stale.millisecondsSinceEpoch),
-      );
-    },
-  );
 
   test('no repositories means no work at all', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -301,12 +310,10 @@ void main() {
       ExtensionsController.repoUrlsKey,
     );
 
-    expect(
-      await container
-          .read(extensionsControllerProvider.notifier)
-          .autoCheckForUpdates(),
-      isEmpty,
-    );
+    final report = await container
+        .read(extensionsControllerProvider.notifier)
+        .autoUpdate();
+    expect(report.isEmpty, isTrue);
     expect(repos.fetchCalls, isEmpty);
   });
 
@@ -323,7 +330,10 @@ void main() {
       repos = _FakeRepositoryService(
         fetchDelay: const Duration(milliseconds: 50),
       );
-      plugins = _FakePluginStorageService(const <ExtensionPlugin>[]);
+      plugins = _FakePluginStorageService(
+        const <ExtensionPlugin>[],
+        const <ExtensionPlugin>[],
+      );
       final container = ProviderContainer(
         overrides: [
           repositoryServiceProvider.overrideWithValue(repos),
@@ -332,7 +342,6 @@ void main() {
             _FakeSettingsRepository(),
           ),
           extensionManagerProvider.overrideWith(_NoopExtensionManager.new),
-          meteredConnectionProvider.overrideWithValue(() async => false),
         ],
       );
       addTearDown(container.dispose);

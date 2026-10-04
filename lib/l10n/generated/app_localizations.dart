@@ -189,6 +189,24 @@ abstract class AppLocalizations {
   /// **'English'**
   String get languageName;
 
+  /// Manage tab, Stremio add-ons: the liveness probe for an installed add-on is still running.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking add-on…'**
+  String get addonHealthChecking;
+
+  /// Manage tab, Stremio add-ons: the add-on answered its manifest ping. {ms} is the round-trip latency in milliseconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Working · {ms} ms'**
+  String addonHealthWorking(int ms);
+
+  /// Manage tab, Stremio add-ons: the add-on did not answer its manifest ping (offline, moved, or wrong URL).
+  ///
+  /// In en, this message translates to:
+  /// **'Unavailable'**
+  String get addonHealthUnavailable;
+
   /// No description provided for @home.
   ///
   /// In en, this message translates to:
@@ -1422,7 +1440,7 @@ abstract class AppLocalizations {
   /// No description provided for @removeRepoWarning.
   ///
   /// In en, this message translates to:
-  /// **'This will remove the repository and uninstall ALL its plugin.'**
+  /// **'This will remove the repository and uninstall ALL its plugins.'**
   String get removeRepoWarning;
 
   /// No description provided for @addRepository.
@@ -1491,6 +1509,30 @@ abstract class AppLocalizations {
   /// **'Install'**
   String get install;
 
+  /// No description provided for @discoverSearchHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Search community add-ons'**
+  String get discoverSearchHint;
+
+  /// No description provided for @discoverClearSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear'**
+  String get discoverClearSearch;
+
+  /// No description provided for @discoverNeedsWebSetup.
+  ///
+  /// In en, this message translates to:
+  /// **'Needs quick setup on the add-on\'s website'**
+  String get discoverNeedsWebSetup;
+
+  /// No description provided for @discoverOpenSetup.
+  ///
+  /// In en, this message translates to:
+  /// **'Set up on the add-on website'**
+  String get discoverOpenSetup;
+
   /// No description provided for @error.
   ///
   /// In en, this message translates to:
@@ -1544,6 +1586,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{count, plural, =1{Updated 1 extension} other{Updated {count} extensions}}'**
   String extensionsUpdated(num count);
+
+  /// Title of a toast shown after launch: a repository collection the user follows (a repository that lists other repositories, like the one the 'universe' shortcode adds) listed repositories it had not listed before, and the app added them. {source} is the collection's name, or a few names separated by commas; names are proper nouns and never translated. The toast's body lists the new repositories' names.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{New repository in {source}} other{{count} new repositories in {source}}}'**
+  String extensionsNewRepositories(int count, String source);
+
+  /// Title of a toast shown after launch: a repository the user has added lists plugins it did not list before. They are available to install, not installed. {repository} is the repository's name, or a few names separated by commas; names are proper nouns and never translated. The toast's body lists the new plugins' names.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{New plugin in {repository}} other{{count} new plugins in {repository}}}'**
+  String extensionsNewPlugins(int count, String repository);
 
   /// No description provided for @invalidNavigation.
   ///
@@ -3189,6 +3243,18 @@ abstract class AppLocalizations {
   /// **'Unplayable'**
   String get playerSourceUnplayable;
 
+  /// Reachability column of the source list, beside 'Reachable', for a link whose server answered but ignores byte ranges: it plays, but only from its start, so the viewer cannot jump ahead and a resume starts over. Keep it as short as 'Reachable'.
+  ///
+  /// In en, this message translates to:
+  /// **'Can\'t seek'**
+  String get playerSourceCannotSeek;
+
+  /// Reachability column of the source list, for a link that answered with a web page - a link generator, a login or a missing-file page - rather than anything that plays. Keep it as short as 'Reachable'.
+  ///
+  /// In en, this message translates to:
+  /// **'Not a video'**
+  String get playerSourceNotVideo;
+
   /// Title of the Nuvio source card on a TMDB details screen. Sits beside the 'Available sources' card, which is the SkyStream plugin system; the two are peers. 'Nuvio' is the name of the third-party scraper project and is never translated.
   ///
   /// In en, this message translates to:
@@ -3236,6 +3302,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{count, plural, =1{1 add-on} other{{count} add-ons}}'**
   String stremioAddonCount(int count);
+
+  /// Stremio sources sheet header: opens the free-text filter over add-on and provider names.
+  ///
+  /// In en, this message translates to:
+  /// **'Search links'**
+  String get addonSourcesSearchTooltip;
+
+  /// Stremio sources sheet header: hides the search field and clears the query.
+  ///
+  /// In en, this message translates to:
+  /// **'Close search'**
+  String get addonSourcesCloseSearchTooltip;
+
+  /// Stremio sources sheet search field placeholder. Users type an add-on name (Torrentio), an inner provider (VegaMovies), or a quality token.
+  ///
+  /// In en, this message translates to:
+  /// **'Add-on, provider, quality…'**
+  String get addonSourcesSearchHint;
+
+  /// Stremio sources sheet empty state when HD/kind chips or the text search hide every link.
+  ///
+  /// In en, this message translates to:
+  /// **'No links match. Clear search or try \"All\".'**
+  String get addonSourcesNoMatchFilter;
+
+  /// Installed add-ons list on the Manage tab: placeholder for filtering by name, id, or resource.
+  ///
+  /// In en, this message translates to:
+  /// **'Search installed add-ons…'**
+  String get addonManageSearchHint;
+
+  /// Installed add-ons list empty state when the search box filters everything out.
+  ///
+  /// In en, this message translates to:
+  /// **'No installed add-on matches \"{query}\".'**
+  String addonManageNoMatch(String query);
 }
 
 class _AppLocalizationsDelegate

@@ -1,3 +1,7 @@
+// A test's ProviderScope is its root scope; the rule only recognises one
+// passed to runApp.
+// ignore_for_file: riverpod_lint/scoped_providers_should_specify_dependencies
+
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
@@ -749,13 +753,14 @@ void main() {
       );
 
       // And again, which is the whole point: a second press steps on rather
-      // than being spent on the chrome.
+      // than being spent on the chrome. Pressed straight after the first, it
+      // reaches the engine once the presses stop.
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-      await tester.pump();
+      await tester.pump(VlcPlayerController.seekMergeWindow);
       expect(_seeks(engine), <int>[70000, 80000]);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
-      await tester.pump();
+      await tester.pump(VlcPlayerController.seekMergeWindow);
       expect(_seeks(engine), <int>[70000, 80000, 70000]);
 
       await _snapshot(tester, state: 'paused', position: 70000);
@@ -2023,7 +2028,8 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.keyL);
       await tester.pump(const Duration(milliseconds: 50));
       await tester.sendKeyEvent(LogicalKeyboardKey.keyL);
-      await tester.pump();
+      // The second reaches the engine once the presses stop.
+      await tester.pump(VlcPlayerController.seekMergeWindow);
       expect(_seeks(engine), [10000, 20000], reason: 'chained, not undone');
 
       // No snapshot ever comes. Past the window the base is the controller
@@ -2058,6 +2064,9 @@ void main() {
       await doubleTap();
       expect(_seeks(engine), [10000]);
       await doubleTap();
+      // Too close behind the first to go at once: it reaches the engine when
+      // the taps stop.
+      await tester.pump(VlcPlayerController.seekMergeWindow);
       expect(_seeks(engine), [10000, 20000]);
 
       await _snapshot(tester, state: 'paused', position: 20000);
@@ -2108,13 +2117,14 @@ void main() {
       );
 
       await doubleTap(right);
-      expect(_seeks(engine), [10000, 20000]);
       expect(
         find.text('20s'),
         findsOneWidget,
         reason: 'the chain total, not the bare step',
       );
       expect(find.text('10s'), findsNothing);
+      await tester.pump(VlcPlayerController.seekMergeWindow);
+      expect(_seeks(engine), [10000, 20000]);
 
       await _snapshot(tester, state: 'paused', position: 20000);
     });
@@ -2171,6 +2181,9 @@ void main() {
       expect(burst.forward, isFalse, reason: 'drawn on the side it moved to');
       expect(burst.seconds, 0, reason: 'back to the start');
 
+      // The J reaches the engine once the presses stop.
+      await tester.pump(VlcPlayerController.seekMergeWindow);
+      expect(_seeks(engine), [10000, 0]);
       await _snapshot(tester, state: 'paused');
     });
 
@@ -2189,20 +2202,21 @@ void main() {
         expect(_seeks(engine), <int>[20000]);
 
         // Still inside the window and no snapshot has come back: the second
-        // press counts from the first target, exactly as a second L does.
+        // press counts from the first target, exactly as a second L does. It
+        // reaches the engine once the presses stop.
         await _shoulder(tester, LogicalKeyboardKey.gameButtonRight1);
-        expect(_seeks(engine), <int>[
-          20000,
-          30000,
-        ], reason: 'chained, not undone');
         expect(
           tester.widget<PlayerSeekBurst>(find.byType(PlayerSeekBurst)).seconds,
           20,
           reason: 'the shared readout, counting the whole chain',
         );
+        await tester.pump(VlcPlayerController.seekMergeWindow);
+        expect(_seeks(engine), <int>[
+          20000,
+          30000,
+        ], reason: 'chained, not undone');
 
         await _shoulder(tester, LogicalKeyboardKey.gameButtonLeft1);
-        expect(_seeks(engine), <int>[20000, 30000, 20000]);
         final back = tester.widget<PlayerSeekBurst>(
           find.byType(PlayerSeekBurst),
         );
@@ -2211,6 +2225,8 @@ void main() {
         // existing convention: the chain is still 10 s ahead of where it
         // started, and this press went the other way.
         expect(back.seconds, -10);
+        await tester.pump(VlcPlayerController.seekMergeWindow);
+        expect(_seeks(engine), <int>[20000, 30000, 20000]);
 
         await _snapshot(tester, state: 'paused', position: 20000);
       },
@@ -2276,24 +2292,27 @@ void main() {
       final track = tester.getRect(find.byType(PlayerSeekBar));
       await tester.tapAt(Offset(track.left + 24, track.center.dy));
       // The screen-wide double-tap recogniser holds the arena open for its
-      // 300 ms gap before the scrubber's tap can win it and commit.
+      // 300 ms gap before the scrubber's tap can win it and commit. So soon
+      // after the L, the click reaches the engine once the seeks stop.
       await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(VlcPlayerController.seekMergeWindow);
       final clicked = _seeks(engine).last;
       expect(clicked, lessThan(5000), reason: 'the click is near the start');
 
       await tester.sendKeyEvent(LogicalKeyboardKey.keyL);
       await tester.pump();
-
-      expect(_seeks(engine), [
-        10000,
-        clicked,
-        clicked + 10000,
-      ], reason: 'the arrow steps on from the click, not from the old chain');
       expect(
         tester.widget<PlayerSeekBurst>(find.byType(PlayerSeekBurst)).seconds,
         10,
         reason: 'the readout counts from the click too, not from the chain',
       );
+
+      await tester.pump(VlcPlayerController.seekMergeWindow);
+      expect(_seeks(engine), [
+        10000,
+        clicked,
+        clicked + 10000,
+      ], reason: 'the arrow steps on from the click, not from the old chain');
 
       await _snapshot(tester, state: 'paused', position: clicked + 10000);
     });
@@ -3021,6 +3040,9 @@ void main() {
       await _tapControl(tester, forward);
       expect(_seeks(engine), <int>[95000], reason: '65 s + one 30 s step');
       await _tapControl(tester, back);
+      // Tapped this soon after the first, it reaches the engine once the taps
+      // stop.
+      await tester.pump(VlcPlayerController.seekMergeWindow);
       expect(_seeks(engine), <int>[95000, 65000]);
 
       await tester.pump(const Duration(seconds: 2));
@@ -3177,6 +3199,8 @@ void main() {
         20,
       );
 
+      // Merged with the first, the second press's seek is still waiting.
+      await tester.pump(VlcPlayerController.seekMergeWindow);
       await _snapshot(tester, state: 'paused', position: 60000);
     });
 

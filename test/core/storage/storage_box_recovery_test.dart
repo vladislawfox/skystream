@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:skystream/core/storage/storage_service.dart';
+import 'package:skystream/features/extensions/providers/extensions_controller.dart';
 
 /// The recovery contract of `StorageService._safeOpenBox`, exercised through
 /// the real method.
@@ -202,6 +203,42 @@ void main() {
       'oauth-token',
       reason: 'the reset that keeps extensions keeps OAuth sessions too',
     );
+  });
+
+  // "Reset Data (Keep Extensions)" keeps the user's repositories, and with
+  // them how those are followed. Losing the collections stops the new
+  // repositories they list from ever arriving; losing the removals brings
+  // back every repository the user took out of one. The keys are read off
+  // ExtensionsController, so the storage layer's copy of them cannot drift.
+  test('a reset that keeps extensions keeps the collections they follow',
+      () async {
+    const repo = 'https://a.test/repo.json';
+    const collections = '{"universe":["$repo","https://b.test/repo.json"]}';
+    const seen = '{"$repo":["com.example.alpha"]}';
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      ExtensionsController.repoUrlsKey: <String>[repo],
+      ExtensionsController.collectionsKey: collections,
+      ExtensionsController.removedRepoUrlsKey: <String>[
+        'https://b.test/repo.json',
+      ],
+      ExtensionsController.seenPluginsKey: seen,
+      'unrelated_setting': true,
+    });
+    FlutterSecureStorage.setMockInitialValues(<String, String>{});
+
+    await service.clearPreferences();
+
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getStringList(ExtensionsController.repoUrlsKey), <String>[
+      repo,
+    ]);
+    expect(prefs.getString(ExtensionsController.collectionsKey), collections);
+    expect(
+      prefs.getStringList(ExtensionsController.removedRepoUrlsKey),
+      <String>['https://b.test/repo.json'],
+    );
+    expect(prefs.getString(ExtensionsController.seenPluginsKey), seen);
+    expect(prefs.containsKey('unrelated_setting'), isFalse);
   });
 }
 

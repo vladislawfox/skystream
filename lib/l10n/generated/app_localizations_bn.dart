@@ -16,6 +16,17 @@ class AppLocalizationsBn extends AppLocalizations {
   String get languageName => 'বাংলা';
 
   @override
+  String get addonHealthChecking => 'Checking add-on…';
+
+  @override
+  String addonHealthWorking(int ms) {
+    return 'Working · $ms ms';
+  }
+
+  @override
+  String get addonHealthUnavailable => 'Unavailable';
+
+  @override
   String get home => 'হোম';
 
   @override
@@ -728,6 +739,19 @@ class AppLocalizationsBn extends AppLocalizations {
   String get install => 'ইনস্টল করুন';
 
   @override
+  String get discoverSearchHint => 'Search community add-ons';
+
+  @override
+  String get discoverClearSearch => 'Clear';
+
+  @override
+  String get discoverNeedsWebSetup =>
+      'Needs quick setup on the add-on\'s website';
+
+  @override
+  String get discoverOpenSetup => 'Set up on the add-on website';
+
+  @override
   String get error => 'ত্রুটি';
 
   @override
@@ -760,6 +784,28 @@ class AppLocalizationsBn extends AppLocalizations {
       locale: localeName,
       other: '$countটি এক্সটেনশন আপডেট করা হয়েছে',
       one: '১টি এক্সটেনশন আপডেট করা হয়েছে',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String extensionsNewRepositories(int count, String source) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$source-এ $countটি নতুন রিপোজিটরি',
+      one: '$source-এ ১টি নতুন রিপোজিটরি',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String extensionsNewPlugins(int count, String repository) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$repository-এ $countটি নতুন প্লাগইন',
+      one: '$repository-এ ১টি নতুন প্লাগইন',
     );
     return '$_temp0';
   }
@@ -1723,6 +1769,12 @@ class AppLocalizationsBn extends AppLocalizations {
   String get playerSourceUnplayable => 'Unplayable';
 
   @override
+  String get playerSourceCannotSeek => 'Can\'t seek';
+
+  @override
+  String get playerSourceNotVideo => 'Not a video';
+
+  @override
   String get nuvioPlugins => 'Nuvio plugins';
 
   @override
@@ -1762,5 +1814,26 @@ class AppLocalizationsBn extends AppLocalizations {
       one: '1 add-on',
     );
     return '$_temp0';
+  }
+
+  @override
+  String get addonSourcesSearchTooltip => 'Search links';
+
+  @override
+  String get addonSourcesCloseSearchTooltip => 'Close search';
+
+  @override
+  String get addonSourcesSearchHint => 'Add-on, provider, quality…';
+
+  @override
+  String get addonSourcesNoMatchFilter =>
+      'No links match. Clear search or try \"All\".';
+
+  @override
+  String get addonManageSearchHint => 'Search installed add-ons…';
+
+  @override
+  String addonManageNoMatch(String query) {
+    return 'No installed add-on matches \"$query\".';
   }
 }

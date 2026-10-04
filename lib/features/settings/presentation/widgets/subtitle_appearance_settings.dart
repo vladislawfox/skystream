@@ -13,8 +13,6 @@
 /// text and why the preview scales with the screen instead of with the slider.
 library;
 
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:skystream/l10n/generated/app_localizations.dart';
@@ -82,14 +80,6 @@ String subtitleBackgroundLabel(AppLocalizations l10n, PlayerSettings settings) {
   );
 }
 
-/// Height of the video frame the engine will scale subtitles against.
-///
-/// Playback is landscape, so the frame is as tall as the *short* edge of the
-/// window no matter which way the settings screen happens to be held. On a
-/// television the window is already landscape and this is simply its height.
-double subtitleFrameHeight(Size window) =>
-    math.min(window.width, window.height);
-
 /// Subtitle appearance rows, styled like every other section on the screen.
 class SubtitleAppearanceGroup extends ConsumerWidget {
   const SubtitleAppearanceGroup({required this.settings, super.key});
@@ -151,7 +141,9 @@ class SubtitleAppearanceGroup extends ConsumerWidget {
   }
 }
 
-/// A sample caption drawn the way libVLC will draw it.
+/// A sample caption drawn the way the player will draw it: libVLC for a
+/// track inside the video, SkyStream itself for a subtitle file - both at
+/// [subtitleFontSize].
 class SubtitlePreview extends StatelessWidget {
   const SubtitlePreview({
     required this.settings,
@@ -169,8 +161,7 @@ class SubtitlePreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final style = subtitleStyleFrom(settings);
-    final frameHeight = subtitleFrameHeight(MediaQuery.sizeOf(context));
-    final fontSize = frameHeight / (style.relativeFontSize ?? 16);
+    final fontSize = subtitleFontSize(style, MediaQuery.sizeOf(context));
     final outline = (style.outlineThickness ?? 0).toDouble();
 
     return Container(

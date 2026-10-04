@@ -284,6 +284,8 @@
   "liveStreams": "Fluxuri live",
   "debug": "DEBUG",
   "extensionsUpdated": "{count, plural, one{1 extensie actualizată} few{{count} extensii actualizate} other{{count} de extensii actualizate}}",
+  "extensionsNewRepositories": "{count, plural, one{Depozit nou în {source}} few{{count} depozite noi în {source}} other{{count} de depozite noi în {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{Plugin nou în {repository}} few{{count} pluginuri noi în {repository}} other{{count} de pluginuri noi în {repository}}}",
   "invalidNavigation": "Navigare invalidă.",
   "startOver": "Reîncepe",
   "goBack": "Înapoi",

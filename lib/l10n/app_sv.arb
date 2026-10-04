@@ -284,6 +284,8 @@
   "liveStreams": "Livestreamar",
   "debug": "DEBUG",
   "extensionsUpdated": "{count, plural, one{1 tillägg uppdaterat} other{{count} tillägg uppdaterade}}",
+  "extensionsNewRepositories": "{count, plural, one{Ny källa i {source}} other{{count} nya källor i {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{Nytt tillägg i {repository}} other{{count} nya tillägg i {repository}}}",
   "invalidNavigation": "Ogiltig navigering.",
   "startOver": "Börja om",
   "goBack": "Gå tillbaka",

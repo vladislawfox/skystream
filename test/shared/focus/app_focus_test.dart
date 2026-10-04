@@ -17,7 +17,11 @@ import 'package:skystream/shared/widgets/custom_widgets.dart';
 /// so cannot tell the two apart.
 void main() {
   /// Reads the published answer from inside the scope.
-  Future<bool> pumpProbe(WidgetTester tester, {bool withScope = true}) async {
+  Future<bool> pumpProbe(
+    WidgetTester tester, {
+    bool withScope = true,
+    bool television = false,
+  }) async {
     late bool visible;
     final probe = Builder(
       builder: (context) {
@@ -27,7 +31,9 @@ void main() {
     );
     await tester.pumpWidget(
       MaterialApp(
-        home: withScope ? FocusVisibilityScope(child: probe) : probe,
+        home: withScope
+            ? FocusVisibilityScope(television: television, child: probe)
+            : probe,
       ),
     );
     return visible;
@@ -48,6 +54,62 @@ void main() {
     testWidgets('a key press turns it on', (tester) async {
       await pumpProbe(tester);
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      expect(await reread(tester), isTrue);
+    });
+
+    testWidgets('keys that steer nothing leave it off: a phone\'s volume '
+        'rocker, a media key, a letter', (tester) async {
+      // What lit rings up at random on a phone: the volume buttons arrive as
+      // key presses like any other.
+      await pumpProbe(tester);
+      for (final key in <LogicalKeyboardKey>[
+        LogicalKeyboardKey.audioVolumeDown,
+        LogicalKeyboardKey.audioVolumeUp,
+        LogicalKeyboardKey.mediaPlayPause,
+        LogicalKeyboardKey.keyK,
+        LogicalKeyboardKey.escape,
+      ]) {
+        await tester.sendKeyEvent(key);
+        expect(await reread(tester), isFalse, reason: '$key steers nothing');
+      }
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      expect(await reread(tester), isTrue, reason: "a remote's OK does");
+    });
+
+    testWidgets('nor does a shortcut held with Ctrl, Alt or Cmd', (
+      tester,
+    ) async {
+      await pumpProbe(tester);
+      for (final modifier in <LogicalKeyboardKey>[
+        LogicalKeyboardKey.controlLeft,
+        LogicalKeyboardKey.altLeft,
+        LogicalKeyboardKey.metaLeft,
+      ]) {
+        await tester.sendKeyDownEvent(modifier);
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.sendKeyUpEvent(modifier);
+        expect(await reread(tester), isFalse, reason: '$modifier + Tab');
+      }
+    });
+
+    testWidgets('a television shows it from the first frame, as Android TV '
+        'asks', (tester) async {
+      addTearDown(() {
+        FocusManager.instance.highlightStrategy =
+            FocusHighlightStrategy.automatic;
+      });
+      expect(await pumpProbe(tester, television: true), isTrue);
+      expect(
+        FocusManager.instance.highlightMode,
+        FocusHighlightMode.traditional,
+      );
+    });
+
+    testWidgets('and a television learnt late, once the device profile '
+        'lands', (tester) async {
+      expect(await pumpProbe(tester), isFalse);
+      expect(await pumpProbe(tester, television: true), isFalse);
       expect(await reread(tester), isTrue);
     });
 
@@ -106,6 +168,24 @@ void main() {
           FocusHighlightStrategy.alwaysTouch;
       expect(await pumpProbe(tester, withScope: false), isFalse);
     });
+
+    testWidgets(
+      "Flutter's own highlight mode is off from the first frame, on a desktop "
+      'too',
+      (tester) async {
+        // Flutter starts a desktop in `traditional`, so until the first input
+        // every autofocused Material control on a Mac wore its focus
+        // highlight.
+        addTearDown(() {
+          FocusManager.instance.highlightStrategy =
+              FocusHighlightStrategy.automatic;
+        });
+        await pumpProbe(tester);
+
+        expect(FocusManager.instance.highlightMode, FocusHighlightMode.touch);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
 
     testWidgets("it also drives Flutter's own highlight mode", (tester) async {
       // Otherwise the app runs two rules at once: this file's ring around a
@@ -177,6 +257,58 @@ void main() {
       await tester.pumpAndSettle();
       expect(sideOf(tester)?.color, ThemeData.dark().colorScheme.onSurface);
       expect(sideOf(tester)?.width, AppFocus.ringWidth);
+    });
+
+    testWidgets("a themed Material button's ring comes and goes with the "
+        'input, though focus never moves', (tester) async {
+      // Material reports a button as focused whenever it holds focus, and a
+      // button resolves its style only when it rebuilds - which nothing did
+      // when the input changed under it.
+      final scheme = ThemeData.dark().colorScheme;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData.dark().copyWith(
+            elevatedButtonTheme: ElevatedButtonThemeData(
+              style: ButtonStyle(side: AppFocus.buttonSide(scheme)),
+            ),
+          ),
+          home: FocusVisibilityScope(
+            child: Scaffold(
+              body: Center(
+                child: ElevatedButton(
+                  autofocus: true,
+                  onPressed: () {},
+                  child: const Text('Play'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      BorderSide? ring() {
+        final material = tester.widget<Material>(
+          find
+              .descendant(
+                of: find.byType(ElevatedButton),
+                matching: find.byType(Material),
+              )
+              .first,
+        );
+        return (material.shape as OutlinedBorder?)?.side;
+      }
+
+      expect(primaryFocus?.context?.widget, isNotNull);
+      expect(ring(), BorderSide.none, reason: 'focused, but nobody steering');
+
+      // The only stop on the screen: the key moves focus nowhere.
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pumpAndSettle();
+      expect(ring()?.width, AppFocus.ringWidth);
+
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pumpAndSettle();
+      expect(ring(), BorderSide.none, reason: 'gone under the next tap');
     });
 
     testWidgets('and goes bare again on the next click', (tester) async {

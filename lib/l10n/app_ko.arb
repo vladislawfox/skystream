@@ -284,6 +284,8 @@
   "liveStreams": "실시간 스트리밍",
   "debug": "디버그",
   "extensionsUpdated": "{count, plural, other{{count}개의 확장 프로그램이 업데이트되었습니다}}",
+  "extensionsNewRepositories": "{count, plural, other{{source}에 새 저장소 {count}개}}",
+  "extensionsNewPlugins": "{count, plural, other{{repository}에 새 플러그인 {count}개}}",
   "invalidNavigation": "잘못된 경로입니다. 뒤로 돌아가 주세요.",
   "startOver": "처음부터 다시 시작",
   "goBack": "뒤로 가기",

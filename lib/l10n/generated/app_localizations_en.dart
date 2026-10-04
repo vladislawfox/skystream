@@ -16,6 +16,17 @@ class AppLocalizationsEn extends AppLocalizations {
   String get languageName => 'English';
 
   @override
+  String get addonHealthChecking => 'Checking add-on…';
+
+  @override
+  String addonHealthWorking(int ms) {
+    return 'Working · $ms ms';
+  }
+
+  @override
+  String get addonHealthUnavailable => 'Unavailable';
+
+  @override
   String get home => 'Home';
 
   @override
@@ -683,7 +694,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get removeRepoWarning =>
-      'This will remove the repository and uninstall ALL its plugin.';
+      'This will remove the repository and uninstall ALL its plugins.';
 
   @override
   String get addRepository => 'Add Repository';
@@ -723,6 +734,19 @@ class AppLocalizationsEn extends AppLocalizations {
   String get install => 'Install';
 
   @override
+  String get discoverSearchHint => 'Search community add-ons';
+
+  @override
+  String get discoverClearSearch => 'Clear';
+
+  @override
+  String get discoverNeedsWebSetup =>
+      'Needs quick setup on the add-on\'s website';
+
+  @override
+  String get discoverOpenSetup => 'Set up on the add-on website';
+
+  @override
   String get error => 'Error';
 
   @override
@@ -755,6 +779,28 @@ class AppLocalizationsEn extends AppLocalizations {
       locale: localeName,
       other: 'Updated $count extensions',
       one: 'Updated 1 extension',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String extensionsNewRepositories(int count, String source) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count new repositories in $source',
+      one: 'New repository in $source',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String extensionsNewPlugins(int count, String repository) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count new plugins in $repository',
+      one: 'New plugin in $repository',
     );
     return '$_temp0';
   }
@@ -1716,6 +1762,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get playerSourceUnplayable => 'Unplayable';
 
   @override
+  String get playerSourceCannotSeek => 'Can\'t seek';
+
+  @override
+  String get playerSourceNotVideo => 'Not a video';
+
+  @override
   String get nuvioPlugins => 'Nuvio plugins';
 
   @override
@@ -1755,5 +1807,26 @@ class AppLocalizationsEn extends AppLocalizations {
       one: '1 add-on',
     );
     return '$_temp0';
+  }
+
+  @override
+  String get addonSourcesSearchTooltip => 'Search links';
+
+  @override
+  String get addonSourcesCloseSearchTooltip => 'Close search';
+
+  @override
+  String get addonSourcesSearchHint => 'Add-on, provider, quality…';
+
+  @override
+  String get addonSourcesNoMatchFilter =>
+      'No links match. Clear search or try \"All\".';
+
+  @override
+  String get addonManageSearchHint => 'Search installed add-ons…';
+
+  @override
+  String addonManageNoMatch(String query) {
+    return 'No installed add-on matches \"$query\".';
   }
 }

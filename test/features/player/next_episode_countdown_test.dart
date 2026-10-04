@@ -173,6 +173,39 @@ void main() {
       await _teardown(tester);
     });
 
+    testWidgets('keeps real time when the system removes animations', (
+      tester,
+    ) async {
+      // The countdown is a clock, not an animation. On the default
+      // AnimationBehavior.normal, Flutter runs it at 5% of its duration
+      // whenever Android asks for animations to be removed, and the next
+      // episode started under a second after the card came up.
+      debugSemanticsDisableAnimations = true;
+      addTearDown(() => debugSemanticsDisableAnimations = null);
+      var played = 0;
+
+      await tester.pumpWidget(
+        _host(
+          NextEpisodeCountdown(
+            title: 'The Body',
+            countdown: const Duration(seconds: 15),
+            onPlayNext: () => played++,
+            onCancel: () {},
+          ),
+        ),
+      );
+
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('14'), findsOneWidget);
+      expect(played, 0);
+
+      await tester.pump(const Duration(seconds: 14));
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(played, 1);
+
+      await _teardown(tester);
+    });
+
     testWidgets('holds while playback is paused and resumes with it', (
       tester,
     ) async {

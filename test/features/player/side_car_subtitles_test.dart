@@ -1,13 +1,13 @@
-/// Side-car subtitles, from both ends: what [addSideCarSubtitles] asks the
-/// engine to do at open, and what the Subtitles tab does when a viewer adds
-/// one by hand - observed through the one fake every app-side player test
-/// drives, so the argument shapes stay honest and the id growth on
-/// `addSubtitle` (100, 101, ...) is the fake's own.
+/// Side-car subtitles handed to the engine: what the Subtitles tab does when a
+/// viewer adds one by hand with no screen behind the panel to draw it -
+/// observed through the one fake every app-side player test drives, so the
+/// argument shapes stay honest and the id growth on `addSubtitle` (100, 101,
+/// ...) is the fake's own. The files SkyStream draws itself are
+/// side_car_tracks_test.dart's.
 ///
-/// The tab's half is here because the thing being pinned is libVLC 3's
-/// add-slave: it is *queued* to the input thread, so the track does not exist
-/// when `addSubtitle` completes and no list read in that turn can carry it.
-/// The same fact is why [addSideCarSubtitles] exists at all.
+/// The thing being pinned is libVLC 3's add-slave: it is *queued* to the
+/// input thread, so the track does not exist when `addSubtitle` completes and
+/// no list read in that turn can carry it.
 library;
 
 import 'package:file_picker/file_picker.dart';
@@ -104,130 +104,14 @@ void main() {
       expect(preferredSubtitleIndex(<String?>['en'], null), isNull);
     });
 
-    test('does not pretend to know that eng means en', () {
-      expect(preferredSubtitleIndex(<String?>['eng'], 'en'), isNull);
-    });
-  });
-
-  group('addSideCarSubtitles', () {
-    late FakeVlcEngine engine;
-
-    setUp(() {
-      engine = FakeVlcEngine()..install();
+    test('reads codes of either length and plain names as one language', () {
+      expect(preferredSubtitleIndex(<String?>['fre', 'eng'], 'en'), 1);
+      expect(preferredSubtitleIndex(<String?>['Hindi', 'English'], 'en'), 1);
+      expect(preferredSubtitleIndex(<String?>['en-GB'], 'eng'), 0);
     });
 
-    tearDown(() => engine.dispose());
-
-    // The first open of a session: setMedia and every addSubtitle are queued
-    // and replayed at attach, so this whole function runs against a controller
-    // with no view id. Anything here that needs one throws, and the throw does
-    // not stay local - it escapes the open chain and fails the playback.
-    test('an unattached controller costs the reorder, not the playback', () async {
-      final controller = VlcPlayerController();
-      addTearDown(controller.dispose);
-
-      // enable: 0 with three files is the case that wants the pre-read, and
-      // it is the common one: sources list English first and the preferred
-      // language defaults to English.
-      await expectLater(
-        addSideCarSubtitles(controller, <Uri>[
-          Uri.parse('https://example.com/en.srt'),
-          Uri.parse('https://example.com/fr.srt'),
-          Uri.parse('https://example.com/es.srt'),
-        ], enable: 0),
-        completes,
-      );
-
-      // Nothing reached the engine, because nothing could: the adds are held
-      // on the controller until a VlcPlayer attaches it.
-      expect(engine.methods, isEmpty);
-    });
-
-    test('adds every subtitle, in the order given', () async {
-      final controller = await engine.attach();
-
-      await addSideCarSubtitles(controller, <Uri>[
-        Uri.parse('https://example.com/en.srt'),
-        Uri.parse('https://example.com/es.srt'),
-      ]);
-
-      expect(engine.methods, <String>['addSubtitle', 'addSubtitle']);
-      expect(
-        engine
-            .callsTo('addSubtitle')
-            .map((c) => (c.arguments as Map<Object?, Object?>)['uri'])
-            .toList(),
-        <String>['https://example.com/en.srt', 'https://example.com/es.srt'],
-      );
-
-      controller.dispose();
-    });
-
-    test(
-      'selects the wanted side-car instead of whichever was added last',
-      () async {
-        final controller = await engine.attach();
-        // An embedded track already exists, and is what is on.
-        engine.subtitle = <Map<String, Object?>>[
-          <String, Object?>{'id': 3, 'name': 'Embedded'},
-        ];
-        engine.activeSubtitleId = 3;
-
-        await addSideCarSubtitles(controller, <Uri>[
-          Uri.parse('https://example.com/en.srt'),
-          Uri.parse('https://example.com/es.srt'),
-          Uri.parse('https://example.com/pt.srt'),
-        ], enable: 0);
-
-        // The English file is the first id that was not there beforehand.
-        final select = engine.calls.last;
-        expect(select.method, 'setSubtitleTrack');
-        expect((select.arguments as Map<Object?, Object?>)['id'], 100);
-
-        // And it is what the engine now reports as on - which is the id the
-        // panel's Subtitles tab ticks and lands focus on, straight off the
-        // controller's value once the snapshot arrives.
-        final delivered = await engine.emit(<String, Object?>{
-          'state': 'paused',
-        });
-        expect(delivered['subtitleTrack'], 100);
-        expect(controller.value.activeSubtitleTrackId, 100);
-        expect(
-          controller.value.trackRevision,
-          3,
-          reason: 'one revision per side-car, so the panel re-reads the list',
-        );
-
-        controller.dispose();
-      },
-    );
-
-    test('asks the engine nothing extra when the last one is wanted', () async {
-      final controller = await engine.attach();
-
-      await addSideCarSubtitles(controller, <Uri>[
-        Uri.parse('https://example.com/en.srt'),
-        Uri.parse('https://example.com/es.srt'),
-      ], enable: 1);
-
-      expect(engine.methods, <String>['addSubtitle', 'addSubtitle']);
-      expect(
-        engine.activeSubtitleId,
-        101,
-        reason: "add-slave's own select flag already delivered the last one",
-      );
-
-      controller.dispose();
-    });
-
-    test('leaves the engine alone when there is nothing to add', () async {
-      final controller = await engine.attach();
-
-      await addSideCarSubtitles(controller, const <Uri>[], enable: 0);
-
-      expect(engine.methods, isEmpty);
-
-      controller.dispose();
+    test('matches nothing it cannot name', () {
+      expect(preferredSubtitleIndex(<String?>['Track 1', 'SDH'], 'en'), isNull);
     });
   });
 
@@ -304,6 +188,7 @@ void main() {
             tracks: tracks,
             trackInfo: const <VlcMediaTrackInfo>[],
             onTracksChanged: onTracksChanged ?? () {},
+            onOpenPage: (_) {},
           ),
         ),
       ),

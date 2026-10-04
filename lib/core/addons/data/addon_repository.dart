@@ -39,9 +39,14 @@ class AddonsState {
 class AddonRepository extends _$AddonRepository {
   static const String _prefsKey = 'stremio_addons_v2';
 
+  /// The stored add-ons reaching [state]. [autoUpdate] waits on it, so a
+  /// launch that builds this provider and updates in the same breath does not
+  /// look at an empty list.
+  Future<void> _loaded = Future<void>.value();
+
   @override
   AddonsState build() {
-    Future.microtask(load);
+    _loaded = Future.microtask(load);
     return const AddonsState();
   }
 
@@ -64,8 +69,9 @@ class AddonRepository extends _$AddonRepository {
         }
       }
       state = AddonsState(addons: addons, isLoading: false);
-      // Manifests can change (new catalogs, renamed rows); refresh quietly.
-      unawaited(refreshAll(silent: true));
+      // Manifests can change (new catalogs, renamed rows), but the refresh is
+      // not started from here: the launch runs [autoUpdate] once for every
+      // extension system, and a second pass would fetch everything twice.
     } catch (error) {
       if (kDebugMode) debugPrint('[AddonRepository] load failed: $error');
       state = const AddonsState(addons: [], isLoading: false);
@@ -140,12 +146,24 @@ class AddonRepository extends _$AddonRepository {
     await _persist(next);
   }
 
-  Future<void> refreshAll({bool silent = false}) async {
-    if (state.addons.isEmpty) return;
+  /// Launch-time update: every add-on's manifest fetched again, on every
+  /// launch and on any connection. Returns the names of the add-ons whose
+  /// version moved - see [refreshAll].
+  Future<List<String>> autoUpdate() async {
+    await _loaded;
+    return refreshAll(silent: true);
+  }
+
+  /// Fetches every add-on's manifest again. Returns the names of the add-ons
+  /// that now report a different version than the one stored; an add-on seen
+  /// for the first time, or one that could not be reached, is not counted.
+  Future<List<String>> refreshAll({bool silent = false}) async {
+    if (state.addons.isEmpty) return const <String>[];
     if (!silent) state = state.copyWith(isLoading: true);
 
     final client = ref.read(addonClientProvider);
     final refreshed = <ManagedAddon>[];
+    final updated = <String>[];
     for (final addon in state.addons) {
       try {
         final manifest = await client.fetchManifest(
@@ -153,12 +171,17 @@ class AddonRepository extends _$AddonRepository {
           forceRefresh: true,
         );
         client.invalidate(addon);
+        final before = addon.manifest?.version;
+        if (before != null && before != manifest.version) {
+          updated.add(manifest.name);
+        }
         refreshed.add(addon.copyWith(manifest: manifest, clearError: true));
       } catch (error) {
         refreshed.add(addon.copyWith(errorMessage: error.toString()));
       }
     }
     await _persist(refreshed);
+    return updated;
   }
 
   bool isInstalled(String rawUrl) {

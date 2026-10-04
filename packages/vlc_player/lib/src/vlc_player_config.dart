@@ -164,22 +164,26 @@ class VlcNetworkConfig {
   /// a rendition it cannot decode.
   final int? adaptiveMaxHeight;
 
-  /// How much of a network stream to hold in memory ahead of and behind the
-  /// read point, in KiB (`--prefetch-buffer-size`).
+  /// How much of a network stream libVLC reads ahead of the demuxer, in KiB
+  /// (`--prefetch-buffer-size`).
   ///
   /// Read-ahead, which is a different thing from [networkCaching]. Caching is
   /// output latency - every stream has to fill it before it emits, so raising
   /// it delays a newly selected audio or subtitle track by exactly that long.
   /// This buffer sits under the demuxer instead, so a larger one costs memory
-  /// and nothing else, and it is what makes a seek land without going back to
-  /// the network. The window serves reads in both directions, so it covers a
-  /// skip backwards as well as forwards.
+  /// and rides out a slow patch of network.
   ///
-  /// Setting this also asks for the `prefetch` stream filter, which libVLC
-  /// does not select on its own. The filter declines local files, where the
-  /// operating system's own cache does better, and PID-filtered streams, where
-  /// it would add latency - both cleanly, so this is inert rather than harmful
-  /// where it does not apply.
+  /// It is forward-only. The `prefetch` filter that owns it gives unread data
+  /// precedence once it is full, so it keeps almost nothing already read, and a
+  /// seek that lands behind its read point empties it, forward part included
+  /// (VLC 3.0.21 `modules/stream_filter/prefetch.c`). A seek behind the
+  /// playhead therefore always goes back to the network; keeping a window on
+  /// both sides of it takes something in front of libVLC.
+  ///
+  /// Only the size is set here. libVLC 3 already inserts `prefetch` as the
+  /// cache stage of every network access (`src/input/access.c`), and naming it
+  /// again in `--stream-filter` stacked a second, identical filter - each
+  /// allocating the whole size up front, so the buffer was reserved twice.
   final int? prefetchBufferKiB;
 
   /// Emits the `--…` options this config represents.
@@ -193,11 +197,9 @@ class VlcNetworkConfig {
       if (referer != null && referer!.isNotEmpty) '--http-referrer=$referer',
       if (adaptiveLogic != null) '--adaptive-logic=${adaptiveLogic!._value}',
       if (adaptiveMaxHeight != null) '--adaptive-maxheight=$adaptiveMaxHeight',
-      // The filter scores 0, so naming it is the only way it is ever selected.
-      if (prefetchBufferKiB != null) ...<String>[
-        '--stream-filter=prefetch',
+      // The size only: libVLC inserts the filter itself - see the field.
+      if (prefetchBufferKiB != null)
         '--prefetch-buffer-size=$prefetchBufferKiB',
-      ],
     ];
   }
 }

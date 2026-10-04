@@ -12,7 +12,14 @@
 /// answer, which the web spells `:focus-visible` - show the indicator when the
 /// last input was a key, hide it the moment a pointer goes down.
 /// [FocusVisibilityScope] is that rule, installed once at the root of the app;
-/// [FocusVisibility.of] is how a widget asks.
+/// [FocusVisibility.of] is how a widget asks, and [FocusVisibility.visible]
+/// how a theme's style resolver - which has no context - does.
+///
+/// Having focus is not the same as showing it. Focus moves under a thumb too:
+/// a button autofocused for the remote, a route handing focus back to the
+/// control that opened it, a text field tapped inside a card. None of that is
+/// a reason to draw a ring for someone who is touching the screen, so nothing
+/// in the app draws one from `hasFocus` alone - every indicator asks here.
 ///
 /// Flutter's own [FocusManager.highlightMode] is close but not the same thing:
 /// it distinguishes touch from "traditional", and a mouse is traditional. So a
@@ -36,6 +43,7 @@
 /// light theme gets a dark ring instead of an invisible one.
 library;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -45,8 +53,24 @@ import 'package:flutter/services.dart';
 /// Install one near the root of the app. Without it [FocusVisibility.of] falls
 /// back to [FocusManager.highlightMode], which is the right answer for a test
 /// that pumps a single widget and never builds the root.
+///
+/// The rule is the one browsers apply to `:focus-visible` and Android to its
+/// touch mode: a press of a pointer - a finger, a mouse, a trackpad - hides
+/// every indicator, and a key that moves or activates focus shows them. Keys
+/// that do neither are not someone steering by focus, and must not light the
+/// screen up: a phone's volume rocker, a media key, a shortcut held with
+/// Ctrl, Alt or Cmd, a letter typed into a field.
 class FocusVisibilityScope extends StatefulWidget {
-  const FocusVisibilityScope({required this.child, super.key});
+  const FocusVisibilityScope({
+    required this.child,
+    this.television = false,
+    super.key,
+  });
+
+  /// A television has no touch to hide focus from: focus shows from the first
+  /// frame, as Android TV asks of every app, and only a pointer - an air
+  /// mouse - hides it, until the next key.
+  final bool television;
 
   final Widget child;
 
@@ -55,14 +79,19 @@ class FocusVisibilityScope extends StatefulWidget {
 }
 
 class _FocusVisibilityScopeState extends State<FocusVisibilityScope> {
-  /// Starts false: nothing has been focused yet, so there is nothing to draw a
-  /// ring around, and the first key event flips it before the first traversal
-  /// lands anywhere.
-  final ValueNotifier<bool> _visible = ValueNotifier<bool>(false);
+  /// Hidden until a key says otherwise, except on a television.
+  late final ValueNotifier<bool> _visible = ValueNotifier<bool>(
+    widget.television,
+  );
 
   @override
   void initState() {
     super.initState();
+    FocusVisibility._active = _visible;
+    // From the first frame, not from the first input: Flutter's own default
+    // on a desktop is `traditional`, which lit up every autofocused Material
+    // control on a Mac before anyone had touched a key.
+    _applyStrategy();
     // A global pointer route rather than a [Listener] in the tree: a Listener
     // only sees what reaches it, and a pointer swallowed by a platform view or
     // by a child that claims the gesture would never clear the ring.
@@ -71,10 +100,26 @@ class _FocusVisibilityScopeState extends State<FocusVisibilityScope> {
   }
 
   @override
+  void didUpdateWidget(FocusVisibilityScope oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The device profile resolves a few frames after launch, so a television
+    // can be learnt late. After the frame: the flip rebuilds what is focused,
+    // which is not for the middle of this build.
+    if (widget.television && !oldWidget.television) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _set(true);
+      });
+    }
+  }
+
+  @override
   void dispose() {
     GestureBinding.instance.pointerRouter.removeGlobalRoute(_handlePointer);
     HardwareKeyboard.instance.removeHandler(_handleKey);
     FocusManager.instance.highlightStrategy = FocusHighlightStrategy.automatic;
+    if (identical(FocusVisibility._active, _visible)) {
+      FocusVisibility._active = null;
+    }
     _visible.dispose();
     super.dispose();
   }
@@ -87,31 +132,89 @@ class _FocusVisibilityScopeState extends State<FocusVisibilityScope> {
   }
 
   bool _handleKey(KeyEvent event) {
-    if (event is KeyDownEvent) _set(true);
+    if (event is KeyDownEvent && _steers(event)) _set(true);
     // Never handled: this is an observer, and returning true here would eat
     // every key in the application.
     return false;
   }
 
+  /// Whether [event] is someone driving the app by focus: a key that moves it
+  /// or activates what has it, pressed without Ctrl, Alt or Cmd - the
+  /// modifiers that make a key a shortcut, as `:focus-visible` has them.
+  static bool _steers(KeyDownEvent event) {
+    final keyboard = HardwareKeyboard.instance;
+    if (keyboard.isControlPressed ||
+        keyboard.isAltPressed ||
+        keyboard.isMetaPressed) {
+      return false;
+    }
+    return _kSteeringKeys.contains(event.logicalKey);
+  }
+
+  /// A remote's D-pad arrives as the arrows and Select; a keyboard adds Tab,
+  /// Enter, Space and the page keys; a game controller its face buttons.
+  /// Everything else - volume, media, Back, Escape, letters - leaves the
+  /// indicators as they were.
+  static final Set<LogicalKeyboardKey> _kSteeringKeys = <LogicalKeyboardKey>{
+    LogicalKeyboardKey.arrowUp,
+    LogicalKeyboardKey.arrowDown,
+    LogicalKeyboardKey.arrowLeft,
+    LogicalKeyboardKey.arrowRight,
+    LogicalKeyboardKey.tab,
+    LogicalKeyboardKey.select,
+    LogicalKeyboardKey.enter,
+    LogicalKeyboardKey.numpadEnter,
+    LogicalKeyboardKey.space,
+    LogicalKeyboardKey.pageUp,
+    LogicalKeyboardKey.pageDown,
+    LogicalKeyboardKey.home,
+    LogicalKeyboardKey.end,
+    LogicalKeyboardKey.gameButtonA,
+    LogicalKeyboardKey.gameButtonX,
+    LogicalKeyboardKey.gameButtonY,
+    LogicalKeyboardKey.gameButtonSelect,
+    LogicalKeyboardKey.gameButtonStart,
+  };
+
   void _set(bool value) {
     if (_visible.value == value) return;
     _visible.value = value;
+    _applyStrategy();
+    _rebuildFocusedButton();
+  }
 
-    // Flutter's own Material controls answer to [FocusManager.highlightMode]
-    // rather than to this, so without the line below the app would run two
-    // rules at once: a focused [ElevatedButton] would wear this file's ring
-    // while the [InkWell] under it stayed dark. Pointing the framework's
-    // strategy at the same signal makes them one rule.
-    //
-    // It is also the more trustworthy signal on a television. Flutter decides
-    // `traditional` from key events, but it discards any Android key event
-    // whose device id is -1 as a soft-keyboard press - which is what an
-    // injected event and some network remotes look like - and stays in
-    // `touch` forever, with every Material focus highlight suppressed.
-    // [HardwareKeyboard] has no such filter.
-    FocusManager.instance.highlightStrategy = value
+  /// Flutter's own Material controls answer to [FocusManager.highlightMode]
+  /// rather than to this, so without it the app would run two rules at once:
+  /// a focused [ElevatedButton] would wear this file's ring while the
+  /// [InkWell] under it stayed dark. Pointing the framework's strategy at the
+  /// same signal makes them one rule.
+  ///
+  /// It is also the more trustworthy signal on a television. Flutter decides
+  /// `traditional` from key events, but it discards any Android key event
+  /// whose device id is -1 as a soft-keyboard press - which is what an
+  /// injected event and some network remotes look like - and stays in `touch`
+  /// forever, with every Material focus highlight suppressed. [HardwareKeyboard]
+  /// has no such filter.
+  void _applyStrategy() {
+    FocusManager.instance.highlightStrategy = _visible.value
         ? FocusHighlightStrategy.alwaysTraditional
         : FocusHighlightStrategy.alwaysTouch;
+  }
+
+  /// A Material button draws its ring from its own style ([AppFocus.buttonSide]),
+  /// and a switch its focus icon from the theme's, each resolved when it
+  /// rebuilds - and nothing rebuilds them when the answer here changes while
+  /// they keep focus, so a ring would stay up under the next tap. Only the
+  /// focused control can be wearing one, so that is the one rebuilt.
+  void _rebuildFocusedButton() {
+    final focused = FocusManager.instance.primaryFocus?.context;
+    if (focused is! Element || !focused.mounted) return;
+    focused.visitAncestorElements((element) {
+      final widget = element.widget;
+      if (widget is! ButtonStyleButton && widget is! Switch) return true;
+      element.markNeedsBuild();
+      return false;
+    });
   }
 
   @override
@@ -127,6 +230,9 @@ class FocusVisibility extends InheritedNotifier<ValueNotifier<bool>> {
     required super.child,
   }) : super(notifier: notifier);
 
+  /// The installed scope's answer, for [visible].
+  static ValueListenable<bool>? _active;
+
   /// Whether a focus indicator should be painted, rebuilding [context] when
   /// the answer changes.
   ///
@@ -141,6 +247,14 @@ class FocusVisibility extends InheritedNotifier<ValueNotifier<bool>> {
     }
     return scope.notifier?.value ?? false;
   }
+
+  /// The same answer without a context, for a theme's style resolvers, which
+  /// are handed a set of states and nothing else. It does not rebuild
+  /// anything by itself: the scope rebuilds the one focused button whenever
+  /// it changes.
+  static bool get visible =>
+      _active?.value ??
+      FocusManager.instance.highlightMode != FocusHighlightMode.touch;
 }
 
 /// Whether [hasFocus] should be *shown* as focus in [context].
@@ -187,12 +301,18 @@ abstract final class AppFocus {
   /// be passed for [OutlinedButton]: a resolver is a single property, so one
   /// that answered null would take the outline off every unfocused outlined
   /// button in the app.
+  ///
+  /// Material reports [WidgetState.focused] whenever the button *has* focus,
+  /// not only when focus should show - an autofocused button under a thumb is
+  /// focused - so the ring also asks [FocusVisibility.visible].
   static WidgetStateProperty<BorderSide?> buttonSide(
     ColorScheme scheme, {
     BorderSide? unfocused,
   }) {
     return WidgetStateProperty.resolveWith<BorderSide?>((states) {
-      if (!states.contains(WidgetState.focused)) return unfocused;
+      if (!states.contains(WidgetState.focused) || !FocusVisibility.visible) {
+        return unfocused;
+      }
       return BorderSide(
         color: ringColorOf(scheme),
         width: ringWidth,

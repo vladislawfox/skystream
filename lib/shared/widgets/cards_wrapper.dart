@@ -178,12 +178,11 @@ class _CardsWrapperState extends State<CardsWrapper>
     // one whose title they cannot. The border and the shadow are the cue here,
     // and a white border on a poster reads from a sofa perfectly well.
     //
-    // [FocusManager.highlightMode] is trustworthy for this now: it is driven
-    // from the same signal as every other focus affordance in the app. See
+    // Nor does focus grow it anywhere else: under a thumb or a mouse, focus
+    // is not something to show at all - a card autofocused for the remote
+    // sat enlarged on a phone nobody had touched. See
     // `shared/focus/app_focus.dart`.
-    final isDirectional =
-        FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
-    final shouldScale = _isHovered || (_isFocused && !isDirectional);
+    final shouldScale = _isHovered;
     if (shouldScale) {
       _ensureController();
       _controller!.forward();

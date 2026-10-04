@@ -284,6 +284,8 @@
   "liveStreams": "Diretos",
   "debug": "DEPURAÇÃO",
   "extensionsUpdated": "{count, plural, one{1 extensão atualizada} other{{count} extensões atualizadas}}",
+  "extensionsNewRepositories": "{count, plural, one{Novo repositório em {source}} other{{count} novos repositórios em {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{Nova extensão em {repository}} other{{count} novas extensões em {repository}}}",
   "invalidNavigation": "Navegação inválida.",
   "startOver": "Recomeçar",
   "goBack": "Voltar",

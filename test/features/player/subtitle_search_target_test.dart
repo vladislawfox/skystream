@@ -6,6 +6,8 @@ MultimediaItem _item({
   String? imdbId,
   int? tmdbId,
   Map<String, String>? syncData,
+  MultimediaContentType contentType = MultimediaContentType.series,
+  List<Episode>? episodes,
 }) => MultimediaItem(
   title: 'The Show',
   url: 'https://example.test/show',
@@ -13,6 +15,8 @@ MultimediaItem _item({
   imdbId: imdbId,
   tmdbId: tmdbId,
   syncData: syncData,
+  contentType: contentType,
+  episodes: episodes,
 );
 
 Episode _episode({int season = 0, int episode = 0}) => Episode(
@@ -126,6 +130,35 @@ void main() {
       expect(target.season, 3);
       expect(target.episode, isNull);
       expect(target.hasEpisode, isFalse);
+    });
+
+    test('a film handed over as a show of one episode searches as a film', () {
+      // 4K HD's Inception: typed a movie, with one episode, S1 E1.
+      final only = _episode(season: 1, episode: 1);
+      final target = SubtitleSearchTarget.of(
+        _item(
+          imdbId: 'tt1375666',
+          contentType: MultimediaContentType.movie,
+          episodes: [only],
+        ),
+        only,
+      );
+      expect(target.season, isNull);
+      expect(target.episode, isNull);
+      expect(target.imdbId, 'tt1375666');
+    });
+
+    test('a series its plugin left typed a movie keeps its episode', () {
+      final episodes = [
+        for (var number = 1; number <= 3; number++)
+          _episode(season: 1, episode: number),
+      ];
+      final target = SubtitleSearchTarget.of(
+        _item(contentType: MultimediaContentType.movie, episodes: episodes),
+        episodes[1],
+      );
+      expect(target.season, 1);
+      expect(target.episode, 2);
     });
 
     test('title stays the bare show title, never decorated', () {

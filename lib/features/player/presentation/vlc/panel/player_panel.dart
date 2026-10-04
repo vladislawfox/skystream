@@ -11,6 +11,11 @@
 /// focusable buttons rather than a scrollable [TabBar], and nothing here
 /// hand-routes an arrow key.
 ///
+/// A tab can open a second step in the panel's place - the Subtitles tab's
+/// online search - under a title and a Back button ([PanelPage]). Back from
+/// there is back to the tab, focused on the row that opened it; only Back
+/// from the tabs closes the panel.
+///
 /// Data is live: the screen publishes a [PanelData] through a
 /// `ValueListenable` and the panel rebuilds from it, so a failover, a late
 /// probe or a torrent poll moves the tick, the chips and the badges in place.
@@ -28,6 +33,8 @@
 /// vlc_player_controls.dart apply here in full.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -35,12 +42,14 @@ import 'package:vlc_player/vlc_player.dart';
 
 import '../../../../../core/domain/entity/multimedia_item.dart';
 import '../../../../../l10n/generated/app_localizations.dart';
+import '../../../domain/side_car_subtitles.dart';
 import '../../widgets/hotstar_player_style.dart';
 import '../torrent_file_sheet.dart';
 import 'player_episodes_tab.dart';
 import 'player_files_tab.dart';
 import 'player_panel_data.dart';
 import 'player_panel_metrics.dart';
+import 'player_panel_page.dart';
 import 'player_panel_row.dart';
 import 'player_panel_shell.dart';
 import 'player_sources_tab.dart';
@@ -101,6 +110,7 @@ Future<void> showPlayerPanel(
   ValueChanged<TorrentFile>? onPickFile,
   ValueChanged<BuildContext>? onOpened,
   EpisodeProgressLookup? episodeProgress,
+  SideCarSubtitles? sideCars,
 }) {
   return Navigator.of(context).push<void>(
     _PlayerPanelRoute(
@@ -117,6 +127,7 @@ Future<void> showPlayerPanel(
           onPickEpisode: onPickEpisode,
           onPickFile: onPickFile,
           episodeProgress: episodeProgress,
+          sideCars: sideCars,
           onClose: () => Navigator.of(routeContext).pop(),
         );
       },
@@ -153,6 +164,38 @@ class _PlayerPanelRoute extends PopupRoute<void> {
 
   @override
   Duration get transitionDuration => HotstarPlayerStyle.panelMotionDuration;
+
+  /// A tap beside the drawer is the viewer done with it, wherever it has got
+  /// to, so it closes the panel from a second step too. Back is what walks
+  /// the steps: the framework's own barrier asks for a `maybePop`, which the
+  /// panel answers from a step by stepping back - see [PanelPage].
+  @override
+  Widget buildModalBarrier() {
+    void dismiss() {
+      if (isCurrent) navigator?.pop();
+    }
+
+    if (offstage) {
+      return ModalBarrier(
+        dismissible: barrierDismissible,
+        semanticsLabel: barrierLabel,
+        barrierSemanticsDismissible: semanticsDismissible,
+        onDismiss: dismiss,
+      );
+    }
+    return AnimatedModalBarrier(
+      color: animation!.drive(
+        ColorTween(
+          begin: barrierColor.withValues(alpha: 0),
+          end: barrierColor,
+        ).chain(CurveTween(curve: barrierCurve)),
+      ),
+      dismissible: barrierDismissible,
+      semanticsLabel: barrierLabel,
+      barrierSemanticsDismissible: semanticsDismissible,
+      onDismiss: dismiss,
+    );
+  }
 
   @override
   Widget buildPage(
@@ -193,6 +236,7 @@ class PlayerPanel extends StatefulWidget {
     this.onPickEpisode,
     this.onPickFile,
     this.episodeProgress,
+    this.sideCars,
     super.key,
   });
 
@@ -218,6 +262,12 @@ class PlayerPanel extends StatefulWidget {
   /// [data]: a closure has no `==`, and [PanelData]'s equality is what keeps
   /// the panel still under the screen's republishes.
   final EpisodeProgressLookup? episodeProgress;
+
+  /// The subtitle files SkyStream draws, for the Subtitles tab to list beside
+  /// the video's own tracks. A listenable of its own rather than part of
+  /// [data], because a file's progress is not something to republish the
+  /// whole panel over.
+  final SideCarSubtitles? sideCars;
 
   @override
   State<PlayerPanel> createState() => _PlayerPanelState();
@@ -259,6 +309,17 @@ class _PlayerPanelState extends State<PlayerPanel> {
   /// row.
   bool _reloadedSinceSwitch = false;
 
+  /// The second step the panel is on, or null on the tabs. See [PanelPage].
+  PanelPage? _page;
+
+  /// What held focus when [_page] opened, given it back when the page closes.
+  FocusNode? _pageOpener;
+
+  /// The Subtitles tab's Search online row. Owned here so the row keeps it
+  /// wherever the list moves it - a file the search adds is listed ahead of
+  /// it - and Back from the search lands on that row, not its old position.
+  final FocusNode _searchRow = FocusNode(debugLabel: 'panel search row');
+
   @override
   void initState() {
     super.initState();
@@ -284,6 +345,7 @@ class _PlayerPanelState extends State<PlayerPanel> {
   @override
   void dispose() {
     widget.controller.removeListener(_onEngine);
+    _searchRow.dispose();
     super.dispose();
   }
 
@@ -330,6 +392,65 @@ class _PlayerPanelState extends State<PlayerPanel> {
     return PlayerPanelTab.values.where(tabs.contains).toList(growable: false);
   }
 
+  /// Opens [page] in the panel's place. The page takes focus on its first
+  /// frame; the tabs below it keep theirs to hand back.
+  void _openPage(PanelPage page) {
+    if (!mounted) return;
+    _pageOpener = FocusManager.instance.primaryFocus;
+    setState(() => _page = page);
+  }
+
+  /// Back from the page to the tab it was opened from, with focus back on the
+  /// row that opened it.
+  void _closePage() {
+    if (!mounted || _page == null) return;
+    final opener = _pageOpener;
+    _pageOpener = null;
+    setState(() => _page = null);
+    if (opener != null) unawaited(_refocus(opener));
+  }
+
+  /// Gives [opener] focus back once it can take it: the frame after the tabs
+  /// are rebuilt reachable - or, when what the page did moved the engine's
+  /// tracks and the list is being read again, once that read has landed and
+  /// the row is back on screen.
+  Future<void> _refocus(FocusNode opener) async {
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || _page != null) return;
+    if (!_canTakeFocus(opener)) {
+      try {
+        await _tracks;
+      } on Object {
+        // The list says so itself; the row is back either way.
+      }
+      await WidgetsBinding.instance.endOfFrame;
+    }
+    if (!mounted || _page != null || !_canTakeFocus(opener)) return;
+    final row = opener.context;
+    if (row == null || !row.mounted) return;
+    opener.requestFocus();
+    // All of it on screen, too: focus given rather than moved to does not
+    // scroll, and a file the page added ahead of the row can have pushed it
+    // past the fold.
+    unawaited(
+      Scrollable.ensureVisible(
+        row,
+        alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+      ),
+    );
+    unawaited(
+      Scrollable.ensureVisible(
+        row,
+        alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtStart,
+      ),
+    );
+  }
+
+  static bool _canTakeFocus(FocusNode node) {
+    final context = node.context;
+    return context != null && context.mounted && node.canRequestFocus;
+  }
+
   void _select(PlayerPanelTab tab) {
     // Both, not just [_shown]: while live data has substituted a tab, pressing
     // the tab on screen is the viewer choosing it. Returning early would leave
@@ -351,67 +472,149 @@ class _PlayerPanelState extends State<PlayerPanel> {
     // so its type scale, insets and text alphas are installed once here and
     // everything below reads them off the context.
     final metrics = PlayerPanelMetrics.forTv(widget.isTv);
+    final page = _page;
 
-    return Actions(
-      actions: <Type, Action<Intent>>{
-        // Escape, from a desktop keyboard. Back is deliberately not handled
-        // here: on Android it arrives as a route pop the Navigator already
-        // owns, and taking it twice would close the panel and the player.
-        DismissIntent: CallbackAction<DismissIntent>(
-          onInvoke: (_) {
-            widget.onClose();
-            return null;
-          },
-        ),
+    return PopScope(
+      // Back from a page is back to its tab; only Back from the tabs closes
+      // the panel. Android's Back and a remote's arrive as this route's pop,
+      // and the screen routes its own Back here through `maybePop`.
+      canPop: page == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _closePage();
       },
-      child: FocusTraversalGroup(
-        policy: ReadingOrderTraversalPolicy(),
-        child: PlayerPanelMetricsScope(
-          metrics: metrics,
-          child: PlayerPanelShell(
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          // Escape, from a desktop keyboard: a step back from a page, like
+          // Back. Back itself is deliberately not handled here: on Android it
+          // arrives as a route pop the Navigator already owns, and taking it
+          // twice would close the panel and the player.
+          DismissIntent: CallbackAction<DismissIntent>(
+            onInvoke: (_) {
+              if (_page != null) {
+                _closePage();
+              } else {
+                widget.onClose();
+              }
+              return null;
+            },
+          ),
+        },
+        child: FocusTraversalGroup(
+          policy: ReadingOrderTraversalPolicy(),
+          child: PlayerPanelMetricsScope(
             metrics: metrics,
-            // One builder around strip and body together, so both read the
-            // same value and the strip can never offer a tab the body cannot
-            // show.
-            child: ValueListenableBuilder<PanelData>(
-              valueListenable: widget.data,
-              builder: (context, data, _) {
-                final tabs = _tabsOf(data);
-                // Computed, not set: the value that took a tab away arrives
-                // from a listener, where setState would be a rebuild inside a
-                // build.
-                final shown = tabs.contains(_tab) ? _tab : tabs.first;
-                if (shown != _shown) {
-                  // The data, not the viewer, changed what is on screen. The
-                  // rows are gone either way, so the remount is a fresh open
-                  // rather than a switch: on a remote the new list must take
-                  // focus or nothing in the panel holds it.
-                  _shown = shown;
-                  _switchedTab = false;
-                  _reloadedSinceSwitch = false;
-                }
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: <Widget>[
-                    _header(l10n, tabs, shown),
-                    Divider(height: 1, thickness: 1, color: metrics.divider),
-                    Expanded(
-                      // A key per tab so switching gives the new list a fresh
-                      // viewport rather than the previous tab's scroll offset,
-                      // and the same element across data rebuilds of one tab so
-                      // scroll position, centring and row focus survive.
-                      child: KeyedSubtree(
-                        key: ValueKey<PlayerPanelTab>(shown),
-                        child: _body(l10n, data, shown),
+            child: PlayerPanelShell(
+              metrics: metrics,
+              child: Stack(
+                fit: StackFit.expand,
+                children: <Widget>[
+                  // The tabs stay built under a page - the lists read, the
+                  // scroll offset, the row that opened it - so Back finds
+                  // them as they were left. Unpainted, still, and out of
+                  // focus's reach meanwhile.
+                  Offstage(
+                    offstage: page != null,
+                    child: TickerMode(
+                      enabled: page == null,
+                      child: ExcludeFocus(
+                        excluding: page != null,
+                        child: _tabs(l10n, metrics),
                       ),
                     ),
-                  ],
-                );
-              },
+                  ),
+                  if (page != null) _pageView(page, metrics),
+                ],
+              ),
             ),
           ),
         ),
       ),
+    );
+  }
+
+  /// The first step: the tab strip over the chosen tab's body.
+  Widget _tabs(AppLocalizations l10n, PlayerPanelMetrics metrics) {
+    // One builder around strip and body together, so both read the same value
+    // and the strip can never offer a tab the body cannot show.
+    return ValueListenableBuilder<PanelData>(
+      valueListenable: widget.data,
+      builder: (context, data, _) {
+        final tabs = _tabsOf(data);
+        // Computed, not set: the value that took a tab away arrives from a
+        // listener, where setState would be a rebuild inside a build.
+        final shown = tabs.contains(_tab) ? _tab : tabs.first;
+        if (shown != _shown) {
+          // The data, not the viewer, changed what is on screen. The rows are
+          // gone either way, so the remount is a fresh open rather than a
+          // switch: on a remote the new list must take focus or nothing in
+          // the panel holds it.
+          _shown = shown;
+          _switchedTab = false;
+          _reloadedSinceSwitch = false;
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            _header(l10n, tabs, shown),
+            Divider(height: 1, thickness: 1, color: metrics.divider),
+            Expanded(
+              // A key per tab so switching gives the new list a fresh viewport
+              // rather than the previous tab's scroll offset, and the same
+              // element across data rebuilds of one tab so scroll position,
+              // centring and row focus survive.
+              child: KeyedSubtree(
+                key: ValueKey<PlayerPanelTab>(shown),
+                child: _body(l10n, data, shown),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// The second step: Back and the page's title over the page itself.
+  Widget _pageView(PanelPage page, PlayerPanelMetrics metrics) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Padding(
+          padding: const EdgeInsets.fromLTRB(2, 6, 4, 4),
+          child: Row(
+            children: <Widget>[
+              _PanelIconButton(
+                icon: Icons.arrow_back_rounded,
+                tooltip: MaterialLocalizations.of(context).backButtonTooltip,
+                onPressed: _closePage,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  page.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: HotstarPlayerStyle.primaryText,
+                    fontSize: metrics.tabLabelSize,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Divider(height: 1, thickness: 1, color: metrics.divider),
+        Expanded(
+          // A fresh element per page opened, so a search reopened starts from
+          // its own opening rather than the last one's scroll and focus.
+          child: KeyedSubtree(
+            key: ObjectKey(page),
+            child: Builder(
+              builder: (context) => page.builder(context, _closePage),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -642,9 +845,12 @@ class _PlayerPanelState extends State<PlayerPanel> {
               ? tracks.info?.audioTracks ?? const <VlcMediaTrackInfo>[]
               : tracks.info?.subtitleTracks ?? const <VlcMediaTrackInfo>[],
           target: data.subtitleTarget,
+          sideCars: widget.sideCars,
           isTv: widget.isTv,
           autofocus: autofocus,
           onTracksChanged: _reloadTracks,
+          onOpenPage: _openPage,
+          searchFocusNode: isAudio ? null : _searchRow,
         );
       },
     );

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:collection/collection.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:dio/dio.dart' show Options, ResponseType;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -13,6 +14,7 @@ import 'package:vlc_player/vlc_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../../../core/domain/entity/multimedia_item.dart';
+import '../../../../core/network/dio_client_provider.dart';
 import '../../../../core/network/http_defaults.dart';
 import '../../../../core/providers/device_info_provider.dart';
 import '../../../settings/presentation/player_settings_provider.dart';
@@ -27,6 +29,7 @@ import '../../../../l10n/generated/app_localizations.dart';
 import '../../domain/episode_navigator.dart';
 import '../../../skip/data/skip_service.dart';
 import '../../domain/clear_key.dart';
+import '../../domain/hls_video_length.dart';
 import '../../domain/playback_progress.dart';
 import '../../domain/buffered_ahead.dart';
 import '../../../../core/logger/app_logger.dart';
@@ -41,9 +44,11 @@ import '../../domain/playback_tracker.dart';
 import '../../domain/stream_resolver.dart';
 import '../../domain/subtitle_search_target.dart';
 import '../../domain/subtitle_style.dart';
+import '../../domain/track_language.dart';
 import '../player_debug_flags.dart';
 import '../player_platform_service.dart';
 import '../subtitle_search_provider.dart' show subtitleLanguageProvider;
+import '../widgets/hotstar_player_style.dart';
 import 'chrome_visibility_controller.dart';
 import 'ended_card.dart';
 import 'next_episode_countdown.dart';
@@ -52,6 +57,8 @@ import 'panel/player_panel.dart';
 import 'panel/player_panel_labels.dart' show sourceFactsOf;
 import 'player_value_selector.dart';
 import 'resume_hint.dart';
+import 'side_car_fetch.dart';
+import 'side_car_subtitle_view.dart';
 import 'torrent_file_sheet.dart';
 import 'vlc_player_controls.dart';
 
@@ -136,6 +143,13 @@ const Duration _kHealthyPlayback = Duration(seconds: 30);
 /// thresholds and costs nothing — the check is arithmetic on two counters.
 const Duration _kWatchdogTick = Duration(seconds: 1);
 
+/// How recently the source must have delivered bytes for a frozen picture to
+/// count as a refill rather than a stall. See `_bytesArriving`.
+const Duration _kArrivalWindow = Duration(seconds: 5);
+
+/// How soon after a seek a stall must begin to count as that seek's refill.
+const Duration _kAfterSeekSlack = Duration(seconds: 2);
+
 /// How long after Back has put the bars away a second Back is taken for the
 /// same press. Some televisions deliver one press twice — as a key event and
 /// as a `popRoute` in the same frame — and without this the echo would pop the
@@ -158,6 +172,16 @@ const Key openingOverlayKey = Key('player-opening-overlay');
 /// How far from the end the up-next card appears. Matches the card's own
 /// countdown, so the offer and the advance land at roughly the same moment.
 const Duration _kNextEpisodeLeadIn = Duration(seconds: 15);
+
+/// How far libVLC's length for an HLS stream may run past the video's own
+/// before it is capped. Audio tracks routinely outlast the picture by a
+/// fraction of a second; anything past this is a playlist claiming more than
+/// there is. Kept under the two seconds [_handleEnded] allows, so a length
+/// left alone here cannot turn a real ending into a truncated one.
+const Duration _kLengthSlack = Duration(seconds: 1);
+
+/// How long measuring an HLS stream may wait on one playlist.
+const Duration _kPlaylistTimeout = Duration(seconds: 8);
 
 class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     with WidgetsBindingObserver, WindowListener {
@@ -427,6 +451,17 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   /// Whether a stats request is in flight, so a slow platform round trip
   /// cannot queue a second behind itself on the next tick.
   bool _statsInFlight = false;
+
+  /// `readBytes` at the last stats sample, and when it was last seen to grow,
+  /// on [_attemptAge]'s clock. What tells a frozen picture over a source that
+  /// is still refilling from one over a source gone quiet - see
+  /// [_bytesArriving].
+  int? _arrivalReadBytes;
+  Duration? _bytesArrivedAt;
+
+  /// When the viewer last seeked, on [_attemptAge]'s clock: a stall that
+  /// begins with one has a refill ahead of it - see [kStallNudgeAfterSeek].
+  Duration? _lastSeekAt;
   StreamSubscription<List<ConnectivityResult>>? _connectivity;
 
   /// Whether the app is on screen. A backgrounded player freezes its position
@@ -478,6 +513,18 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   RememberedTrack? _rememberedAudio;
   RememberedTrack? _rememberedSubtitle;
 
+  /// The subtitle [_restoreTracks] came to put back and did not find: the new
+  /// media had not listed it yet - a reopened MKV lists its audio first. It
+  /// is looked for again on each change to the list ([_maybeRestoreSubtitle])
+  /// until it is on, or until the viewer picks for themselves.
+  RememberedTrack? _subtitleToRestore;
+
+  /// The track list revision the last look for [_subtitleToRestore] read.
+  int? _subtitleRestoreRevision;
+
+  /// Set while a look for [_subtitleToRestore] is in flight.
+  bool _restoringSubtitle = false;
+
   /// The ids the last snapshot reported, so a change can be spotted without
   /// asking the engine for its track list on every tick.
   int? _seenAudioTrackId;
@@ -486,6 +533,33 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   /// Set by [_openAttempt], cleared once the picks have been put back.
   bool _restorePending = false;
 
+  /// The subtitle files of what is playing - the source's and any the viewer
+  /// added - which SkyStream draws itself rather than handing to libVLC. See
+  /// [SideCarSubtitles].
+  late final SideCarSubtitles _sideCars = SideCarSubtitles(
+    fetch: (url, headers) => _read(sideCarFetchProvider)(url, headers),
+    onUnreadable: _handSideCarToEngine,
+  );
+
+  /// Whether Auto still owes this media its look for a subtitle in the
+  /// viewer's language among the tracks inside the video - see
+  /// [_pickPreferredSubtitle]. Armed per attempt, spent once the video has
+  /// published its tracks.
+  bool _autoPickPending = false;
+
+  /// Whether the viewer has opened the panel on this media, which is where
+  /// every subtitle choice is made. Auto never overrides one.
+  bool _viewerChoseSubtitle = false;
+
+  /// What Auto last looked at: the track list's revision, and whether the
+  /// media had begun to play. A change to either brings another look - see
+  /// [_pickPreferredSubtitle].
+  (int, bool)? _autoPickLook;
+
+  /// Set while one of Auto's looks is in flight, so a revision that moves
+  /// meanwhile does not start a second.
+  bool _autoPicking = false;
+
   /// The last non-zero length the engine reported for this attempt.
   ///
   /// [_handleEnded] tells a finished film from a truncated one by numbers, and
@@ -493,6 +567,15 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   /// a source whose length libVLC never learned. Per attempt, and sticky
   /// within one: the engine reports zero again the moment it reaches the end.
   Duration _lastSeenDuration = Duration.zero;
+
+  /// The address and headers libVLC was given for this attempt, kept when it
+  /// is an HLS playlist whose real length may need reading - see
+  /// [_checkReportedLength]. Per attempt.
+  ({Uri uri, Map<String, String> headers})? _hlsMedia;
+
+  /// Whether this attempt's video has been measured yet, and what it came to.
+  bool _videoLengthAsked = false;
+  Duration? _videoLength;
 
   /// Desktop window state, mirrored so the button icon can follow it.
   ///
@@ -757,6 +840,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     );
 
     _controller.addListener(_onPlaybackValue);
+    _sideCars.addListener(_onSideCars);
     _chrome = ChromeVisibilityController(
       isPlaying: () => _controller.value.isPlaying,
     );
@@ -932,8 +1016,19 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       unawaited(_loadSkipSegments(currentEpisode));
 
       // A row picked while the resume lookup was finishing is the viewer's
-      // choice, and it outranks the resolver's.
-      final first = _pickedBeforeOpen ?? resolved.index;
+      // choice, and it outranks the resolver's. The resolver's is moved off a
+      // source that cannot seek when there is a place to pick up from: it
+      // would play from the top. Only the lookup knows that, and it answers
+      // after the race.
+      final first =
+          _pickedBeforeOpen ??
+          (_resumePosition > Duration.zero
+              ? resumeSourceIndex(
+                  preferred: resolved.index,
+                  total: resolved.streams.length,
+                  probes: _probes,
+                )
+              : resolved.index);
       _pickedBeforeOpen = null;
       _awaitingFirstOpen = false;
       await _openAttempt(first, startAt: _resumePosition);
@@ -1028,6 +1123,14 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
         _read(playerSettingsProvider).asData?.value.subtitleDefault ==
         SubtitleDefault.off;
     _subtitleOffAsked = null;
+    // Auto picks only for media with nothing to put back: a track inside the
+    // video that was on before this reopen is [_restoreTracks]' to restore,
+    // and a subtitle file turned on over it would switch it off again.
+    _autoPickPending = !_subtitlesOffPending && _rememberedSubtitle == null;
+    _autoPickLook = null;
+    _viewerChoseSubtitle = false;
+    _subtitleToRestore = null;
+    _subtitleRestoreRevision = null;
     // Whatever the viewer was listening to and reading goes back on once the
     // new media has published its tracks. A reopen restores the position; it
     // has no business also changing the language.
@@ -1067,6 +1170,9 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // as movement would both hide a stall and sample the wrong position.
     _lastSeenPosition = startAt;
     _lastSeenDuration = Duration.zero;
+    _hlsMedia = null;
+    _videoLengthAsked = false;
+    _videoLength = null;
     _startAttemptClock();
 
     final stream = resolved.streams[index];
@@ -1178,60 +1284,51 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // producing a frame, not on getting to setMedia.
     _handedToEngine = true;
     _startAttemptClock();
-
-    // Register the source's subtitles with the engine rather than tracking
-    // them ourselves. VLC turns each into an ordinary subtitle track, so
-    // getSubtitleTracks() returns embedded and external entries in one list
-    // with one kind of id.
-    //
-    // addSubtitle has no header channel at any layer, so a subtitle behind
-    // the same protection as the video can only be reached by proxying it.
-    //
-    // Collected first and added as a batch: every native backend hardcodes
-    // libVLC's select flag to true, so unawaited adds would select whichever
-    // platform round trip finished last.
-    final subtitlesNeedIdentity = stream.headers?.isNotEmpty ?? false;
-    final sideCars = <Uri>[];
-    final sideCarLanguages = <String?>[];
-    for (final sub in stream.subtitles ?? const <SubtitleFile>[]) {
-      final subUri = _playableUri(sub.url);
-      if (subUri == null) continue;
-      final deliverable = subtitlesNeedIdentity
-          ? await _proxied(subUri, headers)
-          : subUri;
-      if (_disposed || generation != _generation) return;
-      sideCars.add(deliverable);
-      sideCarLanguages.add(sub.lang);
+    if (!_isLive && looksLikeHls(mediaUri)) {
+      _hlsMedia = (uri: mediaUri, headers: headers);
     }
-    await addSideCarSubtitles(
-      _controller,
-      sideCars,
-      // Off has no preference to express: the batch still runs, because the
-      // Subtitles menu can only offer tracks that exist, but naming a language
-      // here would cost a round trip to select a track [_applySubtitleDefault]
-      // turns straight back off - and would show it for those two frames.
-      enable: _subtitlesOffPending
-          ? null
-          : preferredSubtitleIndex(
-              sideCarLanguages,
-              _read(subtitleLanguageProvider),
-            ),
-    );
-    if (_disposed || generation != _generation) return;
-    // Only now, and only when the engine is there to hear it. Every native
-    // hardcodes libVLC's select flag on, so an add that lands after a disable
-    // undoes it: Off can be applied after the batch, never before it.
+
+    // The source's subtitle files are read and drawn by SkyStream rather than
+    // handed to libVLC, which drew them into the picture - so Zoom cut them
+    // off - and could not open the ones behind a playlist or headers at all.
+    // Listed here and fetched when first shown; see [SideCarSubtitles].
     //
-    // On the FIRST open of the session there is no engine yet - the VlcPlayer
-    // widget is only built once this method reaches the playing stage below,
-    // so the controller queues setMedia and every add and replays them on
-    // attach. `disableSubtitle` is not queued, it throws. That open is left to
-    // the tick path, which is what [_applySubtitleDefault] is for; this call
-    // is what spares every LATER open - a failover, a recovery, the next
-    // episode - a quarter-second of subtitles nobody asked for.
-    if (_subtitlesOffPending && _controller.isAttached) {
-      await _disableSubtitles();
-      if (_disposed || generation != _generation) return;
+    // Sent with the video's headers, as they were when libVLC had them
+    // through the proxy: a source's subtitles sit behind the same checks as
+    // its video. A local file has no use for them.
+    final previousSideCar = _sideCars.active;
+    final sideCars = _sideCars.replaceSourceTracks([
+      for (final sub in stream.subtitles ?? const <SubtitleFile>[])
+        if (_playableUri(sub.url) case final url?)
+          (
+            url: url,
+            label: sub.label,
+            language: sub.lang,
+            headers: url.scheme.startsWith('http') ? headers : null,
+          ),
+    ]);
+    // The file the viewer was reading before this reopen - a failover, a
+    // recovery - goes back on, the way [_restoreTracks] puts back a track
+    // inside the video. Having been reading it overrules the Off default for
+    // this media already.
+    final carried = previousSideCar?.origin == SideCarOrigin.source
+        ? matchSideCar(sideCars, previousSideCar!)
+        : null;
+    if (carried != null) {
+      _subtitlesOffPending = false;
+      _autoPickPending = false;
+      unawaited(_sideCars.select(carried, from: startAt));
+    } else if (_autoPickPending && _sideCars.active == null) {
+      // Auto: the source's file in the viewer's language, straight away. When
+      // it ships none, the tracks inside the video are looked at once they
+      // are known - see [_pickPreferredSubtitle].
+      final preferred = preferredSubtitleIndex([
+        for (final track in sideCars) track.languageCode,
+      ], _read(subtitleLanguageProvider));
+      if (preferred != null) {
+        _autoPickPending = false;
+        unawaited(_sideCars.select(sideCars[preferred], from: startAt));
+      }
     }
 
     if (_stage != _Stage.playing) {
@@ -1298,8 +1395,15 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   /// Known gap, accepted: a side-car that lands after the panel has been
   /// opened stays on. The viewer is looking at the subtitle list when it
   /// happens, which is the one moment they can undo it.
+  ///
+  /// The same rule keeps libVLC's own subtitle off while SkyStream draws a
+  /// side-car: two subtitles on screen at once is never what anyone chose,
+  /// and the media can put an embedded track on at any time - when its
+  /// streams appear, after a seek, at an HLS discontinuity. Picking a track
+  /// inside the video from the panel takes the side-car off first, so this
+  /// never undoes that pick.
   void _applySubtitleDefault(VlcPlayerValue value) {
-    if (!_subtitlesOffPending) return;
+    if (!_subtitlesOffPending && _sideCars.active == null) return;
     final active = value.activeSubtitleTrackId;
     if (active == null) {
       // Nothing is selected, so the last request landed. Forget which id it
@@ -1414,11 +1518,54 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
           // be undone by the standing rule.
           _subtitlesOffPending = false;
           await _controller.setSubtitleTrack(match.id);
+        } else {
+          // Most likely not listed yet: the audio being on is what brought
+          // this look, and it can come before the subtitles are read. Looked
+          // for again as the list fills in.
+          _subtitleToRestore = subtitle;
+          _subtitleRestoreRevision = _controller.value.trackRevision;
         }
       }
     } on Object {
       // A refusal leaves the engine's own choice, which is where a viewer
       // would have been without any of this.
+    }
+  }
+
+  /// Looks again for the subtitle [_restoreTracks] could not find, once for
+  /// each change to the track list.
+  void _maybeRestoreSubtitle(VlcPlayerValue value) {
+    final wanted = _subtitleToRestore;
+    if (wanted == null || _restoringSubtitle) return;
+    if (value.trackRevision == _subtitleRestoreRevision) return;
+    _subtitleRestoreRevision = value.trackRevision;
+    _restoringSubtitle = true;
+    unawaited(
+      _restoreSubtitle(wanted).whenComplete(() => _restoringSubtitle = false),
+    );
+  }
+
+  /// Puts [wanted] on if the list now has it. Stands down for a newer media,
+  /// for the viewer's own pick, and for a subtitle file on screen.
+  Future<void> _restoreSubtitle(RememberedTrack wanted) async {
+    final generation = _generation;
+    bool superseded() =>
+        _disposed ||
+        generation != _generation ||
+        _subtitleToRestore != wanted ||
+        _viewerChoseSubtitle ||
+        _sideCars.active != null;
+    try {
+      final tracks = await _controller.getSubtitleTracks();
+      if (superseded()) return;
+      final match = matchRememberedTrack(tracks, wanted);
+      if (match == null) return;
+      _subtitleToRestore = null;
+      // See [_restoreTracks].
+      _subtitlesOffPending = false;
+      await _controller.setSubtitleTrack(match.id);
+    } on Object {
+      // As in [_restoreTracks]: the engine's own choice stands.
     }
   }
 
@@ -1435,6 +1582,141 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     } on Object {
       return;
     }
+  }
+
+  /// A side-car went on or off. On, libVLC's own subtitle goes off now
+  /// rather than at the next tick - see [_applySubtitleDefault].
+  void _onSideCars() {
+    if (_disposed) return;
+    if (_sideCars.active != null) _applySubtitleDefault(_controller.value);
+  }
+
+  /// Starts [_pickPreferredSubtitle] once the video has published tracks - an
+  /// active track is the proof, as it is for [_rememberTracks] - or has begun
+  /// to play without any; and again on each change to the list, and when it
+  /// begins to play, until Auto has decided.
+  void _maybePickPreferredSubtitle(VlcPlayerValue value) {
+    if (!_autoPickPending || _autoPicking) return;
+    if (value.activeAudioTrackId == null &&
+        value.activeSubtitleTrackId == null &&
+        !_sawFrames) {
+      return;
+    }
+    final look = (value.trackRevision, _sawFrames);
+    if (look == _autoPickLook) return;
+    _autoPickLook = look;
+    _autoPicking = true;
+    unawaited(
+      _pickPreferredSubtitle().whenComplete(() => _autoPicking = false),
+    );
+  }
+
+  /// Auto's look at the tracks inside the video, for media whose side-cars
+  /// had none in the viewer's language.
+  ///
+  /// A track in the viewer's language goes on - libVLC itself only turns one
+  /// on when the file flags it as the default, so a film carrying English
+  /// subtitles otherwise started without them. Failing that, the source's
+  /// last side-car, which is what Auto always showed when nothing matched;
+  /// and failing that, whatever the media chose for itself.
+  ///
+  /// Never over a viewer's own choice: opening the panel ends it, wherever it
+  /// has got to.
+  ///
+  /// The list fills in as the demuxer reads the file - a resumed MKV lists
+  /// its audio first and its subtitles after - so until the media plays,
+  /// finding nothing in the viewer's language decides nothing: the next look
+  /// comes with the next change to the list, or with the first picture.
+  /// After that, with none of the source's files to fall back on, Auto goes
+  /// on watching the list for a track in the viewer's language.
+  Future<void> _pickPreferredSubtitle() async {
+    final generation = _generation;
+    bool superseded() =>
+        _disposed ||
+        generation != _generation ||
+        _viewerChoseSubtitle ||
+        _sideCars.active != null;
+    final sources = _sideCars.tracks
+        .where((track) => track.origin == SideCarOrigin.source)
+        .toList();
+
+    final preferred = languageCodeOf(_read(subtitleLanguageProvider));
+    if (preferred != null) {
+      try {
+        final tracks = (await _controller.getSubtitleTracks())
+            .where((track) => track.id >= 0)
+            .toList();
+        if (superseded()) return;
+        List<VlcMediaTrackInfo> info = const [];
+        try {
+          info = (await _controller.getMediaInfo()).subtitleTracks;
+        } on Object {
+          // The description is often enough on its own: libVLC names a track
+          // `Track 1 - [English]`.
+        }
+        if (superseded()) return;
+        if (kDebugMode) {
+          debugPrint(
+            'Subtitles: Auto looks for $preferred in '
+            '${tracks.map((t) => '${t.id}:${t.name}').toList()} '
+            '(on: ${_controller.value.activeSubtitleTrackId})',
+          );
+        }
+        final matches = [
+          for (final (index, track) in tracks.indexed)
+            // Correlated by position, as the panel does: libVLC offers no
+            // other way.
+            if ((languageCodeOf(track.language) ??
+                    languageCodeOf(
+                      index < info.length ? info[index].language : null,
+                    ) ??
+                    languageCodeOf(track.name)) ==
+                preferred)
+              track,
+        ];
+        // A forced track carries only the lines in another language than
+        // the film's, so a full one is the better answer where there is one.
+        bool full(VlcTrackDescription track) =>
+            !track.name.toLowerCase().contains('forced');
+        final active = _controller.value.activeSubtitleTrackId;
+        final best = matches.where(full).firstOrNull ?? matches.firstOrNull;
+        if (best != null) {
+          final activeIsFull = matches.any(
+            (track) => track.id == active && full(track),
+          );
+          _autoPickPending = false;
+          if (!activeIsFull && active != best.id) {
+            await _controller.setSubtitleTrack(best.id);
+          }
+          return;
+        }
+      } on Object {
+        // An engine that will not list or set is left to its own choice
+        // below.
+      }
+    }
+    if (superseded() || !_sawFrames || sources.isEmpty) return;
+    _autoPickPending = false;
+    if (_controller.value.activeSubtitleTrackId != null) return;
+    unawaited(_sideCars.select(sources.last, from: _controller.value.position));
+  }
+
+  /// A side-car in a format SkyStream does not read - MicroDVD, VobSub, TTML
+  /// - goes to libVLC, as every side-car once did. libVLC's add selects what
+  /// it adds, and it arrives as one of the video's own tracks.
+  void _handSideCarToEngine(SideCarTrack track) {
+    unawaited(() async {
+      try {
+        final headers = track.headers;
+        final uri = headers == null
+            ? track.url
+            : await _proxied(track.url, headers);
+        if (_disposed) return;
+        await _controller.addSubtitle(uri);
+      } on Object {
+        // Nothing more can show it.
+      }
+    }());
   }
 
   /// The current candidate failed. Retry it, or move to the next one.
@@ -1510,8 +1792,18 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
           // dropped: the probe is wrong about slow hosts.
           unreachable: <int>{
             for (final entry in _probes.entries)
-              if (entry.value == ProbeOutcome.unhealthy) entry.key,
+              if (entry.value == ProbeOutcome.unhealthy ||
+                  entry.value == ProbeOutcome.notVideo)
+                entry.key,
           },
+          // Picking up where playback stopped: a source that cannot seek would
+          // start it again from the top.
+          cannotSeek: startAt > Duration.zero
+              ? <int>{
+                  for (final entry in _probes.entries)
+                    if (entry.value == ProbeOutcome.unseekable) entry.key,
+                }
+              : const <int>{},
         );
     if (next == null) {
       // Say what actually went wrong: a single-source channel refused for DRM
@@ -1540,14 +1832,10 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     final attempt = _generation;
     _onProbe(generation, index, ProbeOutcome.trying);
     unawaited(
-      isReachable(stream).then(
-        (reached) {
-          _onProbe(
-            generation,
-            index,
-            reached ? ProbeOutcome.healthy : ProbeOutcome.unhealthy,
-          );
-          if (!reached) _abandonUnreachable(attempt, index);
+      probeSource(stream).then(
+        (outcome) {
+          _onProbe(generation, index, outcome);
+          if (!outcome.reached) _abandonUnreachable(attempt, index);
         },
         onError: (Object _) =>
             _onProbe(generation, index, ProbeOutcome.unhealthy),
@@ -1636,6 +1924,10 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // The seek correction describes the outgoing media's counters. The band's
     // rate baseline is left alone on purpose - see [noteMediaChanged].
     _bufferedAhead.noteMediaChanged();
+    // So does the byte count, which restarts with the media.
+    _arrivalReadBytes = null;
+    _bytesArrivedAt = null;
+    _lastSeekAt = null;
   }
 
   void _resetStallClock() {
@@ -1684,6 +1976,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     final seeks = _controller.seekRequests;
     if (seeks != _seenSeekRequests) {
       _seenSeekRequests = seeks;
+      _lastSeekAt = _attemptAge;
       if (_lastStallAction != StallAction.none) _setStatus('');
       _resetStallClock();
       return;
@@ -1711,6 +2004,14 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // down in exactly the states such a source gets stuck in.
     if (!_sawFrames) return;
 
+    _watchArrival();
+    // The stall began with a seek - allowing for the one report of the target
+    // some backends make before the picture freezes - so it has its refill
+    // ahead of it.
+    final seekAt = _lastSeekAt;
+    final afterSeek =
+        seekAt != null &&
+        _attemptAge - _stalledFor - seekAt <= _kAfterSeekSlack;
     final action = stallActionFor(
       stalledFor: _stalledFor,
       hadFrames: _sawFrames,
@@ -1718,6 +2019,8 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       recoverAfter: _attemptIsTorrent
           ? kTorrentStallRecoverAfter
           : kStallRecoverAfter,
+      arriving: _bytesArriving,
+      afterSeek: afterSeek,
     );
     switch (action) {
       case StallAction.none:
@@ -1755,6 +2058,47 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     _videoWindow += _kWatchdogTick;
     _statsInFlight = true;
     unawaited(_sampleVideoHealth());
+  }
+
+  /// Keeps the byte count current through a stall, when the video-health
+  /// sampler stands down. Its answer is read on the next tick.
+  void _watchArrival() {
+    if (!_handedToEngine || _statsInFlight) return;
+    _statsInFlight = true;
+    unawaited(_sampleArrival());
+  }
+
+  Future<void> _sampleArrival() async {
+    final generation = _generation;
+    VlcMediaStats stats;
+    try {
+      stats = await _controller.getMediaStats();
+    } on Object {
+      _statsInFlight = false;
+      return;
+    }
+    _statsInFlight = false;
+    if (_disposed || generation != _generation) return;
+    _noteArrival(stats);
+  }
+
+  void _noteArrival(VlcMediaStats stats) {
+    if (!stats.isAvailable) return;
+    final last = _arrivalReadBytes;
+    _arrivalReadBytes = stats.readBytes;
+    if (last != null && stats.readBytes > last) _bytesArrivedAt = _attemptAge;
+  }
+
+  /// Whether the source has delivered anything in the last few seconds.
+  ///
+  /// A frozen picture over a source still delivering is a refill - a seek
+  /// fetching its keyframe run-up and a fresh buffer - not a source gone
+  /// quiet, and nudging it throws the refill away. A few seconds rather than
+  /// one tick, because bytes come in bursts. False where the engine has no
+  /// counters, which leaves the ladder as it always was.
+  bool get _bytesArriving {
+    final at = _bytesArrivedAt;
+    return at != null && _attemptAge - at <= _kArrivalWindow;
   }
 
   /// Says which side a stutter is coming from, once per change of verdict.
@@ -1821,18 +2165,24 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     }
 
     final value = _controller.value;
+    // Where playback is going, not where the engine last said it was: every
+    // backend goes on publishing the place a seek left until it takes, and
+    // measured from there a step back looks like playback carrying on.
+    final position = _controller.pendingSeekTarget.value ?? value.position;
     final fraction = bufferedFraction(
-      position: value.position,
+      position: position,
       duration: value.duration,
       ahead: _bufferedAhead.sample(
         readBytes: stats.readBytes,
         demuxReadBytes: stats.demuxReadBytes,
-        position: value.position,
+        position: position,
         at: _attemptAge,
         // What tells the estimate a skip happened, so the bytes the skip
         // stranded stop being counted as buffer. See [BufferedAheadEstimator].
         seekRequests: _controller.seekRequests,
         speed: value.playbackSpeed,
+        // The prefetch window libVLC was given, which is all it can hold.
+        capacityBytes: _bufferMb * 1024 * 1024,
       ),
     );
     _bufferedFraction.value = fraction ?? 0;
@@ -1854,6 +2204,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     if (_disposed || generation != _generation) return;
 
     _updateBufferedAhead(stats);
+    _noteArrival(stats);
 
     final baseline = _videoBaseline;
     if (baseline == null) {
@@ -1929,10 +2280,15 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   /// starts a new one, and a stream the engine quietly parked simply resumes.
   /// Only the seek is conditional: a live feed has nowhere to seek to, so it
   /// gets the play() on its own.
+  ///
+  /// "Current" is where playback is meant to be: a seek still on its way wins
+  /// over the published position, which every backend holds at the place the
+  /// seek left until it lands. Re-seeking to that undid the viewer's skip.
   Future<void> _nudge(VlcPlayerValue value) async {
     final generation = _generation;
-    if (value.isSeekable && value.position > Duration.zero) {
-      await _controller.seekTo(value.position);
+    final at = _controller.pendingSeekTarget.value ?? value.position;
+    if (value.isSeekable && at > Duration.zero) {
+      await _controller.seekTo(at);
       // Account for that seek before the next tick reads the counter. The
       // watchdog forgives a freeze the viewer asked for, and this one is its
       // own - left unclaimed it would clear the line it just put up and
@@ -2098,7 +2454,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     if (file != null) return file;
     final item = widget.item.title;
     final episode = _currentEpisode;
-    if (episode == null) return item;
+    if (episode == null || !_isEpisodic) return item;
 
     final parts = <String>[item];
     // Numbering only where the plugin actually populated it; a great many hand
@@ -2259,10 +2615,16 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // a rule still live while the panel is up would undo the pick in the same
     // frame the viewer made it. See [_applySubtitleDefault].
     _subtitlesOffPending = false;
+    // The same goes for Auto's pick: whatever the viewer does from here is
+    // theirs.
+    _viewerChoseSubtitle = true;
+    _autoPickPending = false;
+    _subtitleToRestore = null;
     final isTv = _form == PlayerFormFactor.tv;
     await showPlayerPanel(
       context,
       controller: _controller,
+      sideCars: _sideCars,
       initialTab: tab,
       isTv: isTv,
       // A remote and a keyboard both need focus inside the panel to use it at
@@ -2652,6 +3014,9 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     _seenAudioTrackId = null;
     _seenSubtitleTrackId = null;
     _restorePending = false;
+    // A file the viewer added belonged to the last episode as much as the
+    // source's did.
+    _sideCars.clear();
     _preloaded = null; // route sources belong to the first episode only
     _skipSegments = const <SkipSegment>[]; // previous episode's intro/outro
     // Both offers belong to the episode that just ended. The refusal
@@ -2731,6 +3096,8 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // state says.
     _applySubtitleDefault(value);
     _rememberTracks(value);
+    _maybeRestoreSubtitle(value);
+    _maybePickPreferredSubtitle(value);
     final recorder = _recorder;
     if (recorder == null) return;
 
@@ -2759,7 +3126,14 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // the state enum - decides whether this counts as progress. libVLC reports
     // `buffering` throughout healthy playback on some builds, and gating on the
     // enum meant progress, scrobbling and completion never fired at all.
-    final advanced = value.position != _lastSeenPosition;
+    //
+    // Zero is never progress: it is libVLC saying the media has played nothing
+    // yet, which is all it reports while a source opens. A resume seeds the
+    // last position with its saved place, and the drop from there to zero read
+    // as the position moving - the loading screen went, over a black screen,
+    // before anything had been drawn.
+    final advanced =
+        value.position != _lastSeenPosition && value.position > Duration.zero;
     _lastSeenPosition = value.position;
     final running =
         value.state != VlcPlaybackState.paused &&
@@ -2777,6 +3151,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       // Kept even when the sample below is refused: this is the only length
       // end-of-media has to judge by on a source too short to be resumable,
       // and the only proof that a source which reports none never had one.
+      _checkReportedLength(value);
       if (value.duration > Duration.zero) _lastSeenDuration = value.duration;
       final sample = ProgressSample(
         position: value.position,
@@ -2828,6 +3203,10 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     final recovering = _lastStallAction != StallAction.none;
     _setSawFrames(true);
     _resetStallClock();
+    // A picture is up, so the video's tracks are as known as they will get:
+    // the snapshot that brought it may be the last one for a while if
+    // nothing else changes.
+    if (firstFrame) _maybePickPreferredSubtitle(_controller.value);
     // Whatever the status line was announcing has happened - the first
     // picture, or the position moving again after "Reconnecting…". Clearing on
     // the first frame alone would leave the pill up through a recovery.
@@ -3186,8 +3565,11 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // second Back arriving mid-animation would pop the player out from under
     // the closing panel.
     if (!(ModalRoute.of(sheet)?.isCurrent ?? false)) return false;
-    _sheetContext = null;
-    Navigator.of(sheet).pop();
+    // maybePop rather than pop: the panel may be a step in - on the online
+    // search - and Back from a step is a step back, which the panel's own
+    // PopScope answers. From its tabs the pop goes through and closes it,
+    // and [_openPanel] lets go of [_sheetContext] once it has.
+    unawaited(Navigator.of(sheet).maybePop());
     return true;
   }
 
@@ -3286,6 +3668,71 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     return const <String>[];
   }
 
+  /// Keeps libVLC's length for an HLS stream honest - see
+  /// hls_video_length.dart for how it goes wrong.
+  ///
+  /// The measuring starts at the first length libVLC reports rather than at
+  /// open: its own requests for the playlists are behind it by then, and a
+  /// live stream, which reports none, is never measured at all. The check
+  /// then repeats on every report, because libVLC loads a rendition's
+  /// playlist when it is first wanted - turning subtitles on is enough - so
+  /// the length can grow after the measurement.
+  void _checkReportedLength(VlcPlayerValue value) {
+    final media = _hlsMedia;
+    if (media == null || value.duration <= Duration.zero) return;
+    final measured = _videoLength;
+    if (measured != null) {
+      if (value.duration > measured + _kLengthSlack) _capLength(measured);
+      return;
+    }
+    if (_videoLengthAsked) return;
+    _videoLengthAsked = true;
+    unawaited(_measureVideoLength(media.uri, media.headers, _generation));
+  }
+
+  Future<void> _measureVideoLength(
+    Uri uri,
+    Map<String, String> headers,
+    int generation,
+  ) async {
+    final length = await measureHlsVideoLength(
+      uri,
+      (url) => _fetchPlaylist(url, headers),
+    );
+    if (_disposed || generation != _generation || length == null) return;
+    _videoLength = length;
+    if (_controller.value.duration > length + _kLengthSlack) {
+      _capLength(length);
+    }
+  }
+
+  void _capLength(Duration length) {
+    _controller.setDurationCap(length);
+    // Taken before the cap, with libVLC's length in it - and on a video too
+    // short to be sampled again, the last word [_handleEnded] would get: a
+    // real ending read as a stream dying 27 hours short.
+    final sample = _sample;
+    if (sample != null && sample.duration > length) _sample = null;
+  }
+
+  /// One playlist, asked for with the headers libVLC was given for it.
+  Future<String?> _fetchPlaylist(Uri url, Map<String, String> headers) async {
+    try {
+      final response = await _read(dioClientProvider).getUri<String>(
+        url,
+        options: Options(
+          headers: headers,
+          responseType: ResponseType.plain,
+          receiveTimeout: _kPlaylistTimeout,
+          sendTimeout: _kPlaylistTimeout,
+        ),
+      );
+      return response.data;
+    } catch (_) {
+      return null;
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -3317,6 +3764,8 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // notifier allows.
     _panelData.dispose();
     _bufferedFraction.dispose();
+    _sideCars.removeListener(_onSideCars);
+    _sideCars.dispose();
     unawaited(_connectivity?.cancel());
     // Unconditional and required: Android keeps delivering over this channel
     // while it tears the PiP window down, and a handler left registered closes
@@ -3419,6 +3868,10 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
                   backgroundColor: playerBackdropColor,
                 ),
               ),
+            // Subtitle files, drawn over the picture rather than into it, so
+            // the fit never reaches them - and in PiP as well, as libVLC's
+            // were. Lifted over the controls while those are up.
+            if (_stage == _Stage.playing) _sideCarSubtitles(isTv: isTv),
             // Everything before a picture: getting links, checking them,
             // opening one - `setMedia` hands libVLC a URL and returns, so the
             // playing stage begins with the video widget an empty surface -
@@ -3536,6 +3989,28 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
           ],
         ),
       ),
+    );
+  }
+
+  Widget _sideCarSubtitles({required bool isTv}) {
+    final controlsShown = !_inPip && _sawFrames && _ended == null;
+    return Consumer(
+      builder: (context, ref, _) {
+        final settings =
+            ref.watch(playerSettingsProvider).asData?.value ??
+            const PlayerSettings();
+        return ValueListenableBuilder<bool>(
+          valueListenable: _chrome,
+          builder: (context, chromeUp, _) => SideCarSubtitleView(
+            controller: _controller,
+            subtitles: _sideCars,
+            settings: settings,
+            bottomInset: chromeUp && controlsShown
+                ? HotstarPlayerStyle.bottomChromeHeightFor(isTv: isTv)
+                : 0,
+          ),
+        );
+      },
     );
   }
 
@@ -3786,19 +4261,24 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   }
 
   /// `S1 E3 · Name` for an episode of a series, or null for anything else.
-  ///
-  /// Gated on the content type, not on there being an episode: plugins file a
-  /// film as a one-episode show, which printed "S1 E1 · Full Movie" over it.
   String? _episodeLine(AppLocalizations l10n) {
-    final type = widget.item.contentType;
-    if (type != MultimediaContentType.series &&
-        type != MultimediaContentType.anime) {
-      return null;
-    }
+    if (!_isEpisodic) return null;
     final episode = _currentEpisode;
     if (episode == null) return null;
     final number = l10n.playerSeasonEpisode(episode.season, episode.episode);
     final name = episode.name.trim();
     return name.isEmpty ? number : '$number · $name';
+  }
+
+  /// Whether what is playing is an episode of a series, rather than a film, a
+  /// live channel or anything else that plays as one video.
+  ///
+  /// The content type decides, not the presence of an episode: plugins file a
+  /// film as a one-episode show, which printed "S1 E1 · Full Movie" over it -
+  /// in the startup view and in the top bar alike, so both ask this.
+  bool get _isEpisodic {
+    final type = widget.item.contentType;
+    return type == MultimediaContentType.series ||
+        type == MultimediaContentType.anime;
   }
 }

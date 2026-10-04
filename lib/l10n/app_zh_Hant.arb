@@ -284,6 +284,8 @@
   "liveStreams": "直播",
   "debug": "偵錯",
   "extensionsUpdated": "{count, plural, other{{count} 個擴充功能已更新}}",
+  "extensionsNewRepositories": "{count, plural, other{{source} 中有 {count} 個新儲存庫}}",
+  "extensionsNewPlugins": "{count, plural, other{{repository} 中有 {count} 個新外掛程式}}",
   "invalidNavigation": "導覽無效，請返回。",
   "startOver": "重新開始",
   "goBack": "返回",

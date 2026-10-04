@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_js_ng/flutter_js.dart';
@@ -196,6 +197,13 @@ class NuvioEngine {
         );
       });
 
+      runtime.onMessage('nuvio_dom_tag', (dynamic args) {
+        final data = asMap(args);
+        return jsonEncode(
+          dom.tagsOf(data['doc']?.toString() ?? '', asIds(data['nodes'])),
+        );
+      });
+
       runtime.onMessage('nuvio_dom_text', (dynamic args) {
         final data = asMap(args);
         return dom.textOf(data['doc']?.toString() ?? '', asIds(data['nodes']));
@@ -351,6 +359,9 @@ class NuvioEngineHttp {
   /// Key used to report a failure inside the payload map.
   static const String errorKey = '__nuvioError';
 
+  /// Most of a video, audio or other binary body that is read.
+  static const int mediaBodyLimit = 1024 * 1024;
+
   /// Deliberately has no `badCertificateCallback`: this client replays the
   /// per-host cookie jar upstream and the JSON it fetches decides where the
   /// video lives, so accepting any certificate would let an on-path attacker
@@ -418,6 +429,11 @@ class NuvioEngineHttp {
           request.headers.set('accept', '*/*');
         }
         headers.forEach((key, value) {
+          // The client asks for gzip and decodes it itself. A plugin's own
+          // Accept-Encoding - usually a browser's, `br` included - gets
+          // Brotli back from Cloudflare, which dart:io cannot decode: the page
+          // reached the scraper as bytes. Nuvio drops the header too.
+          if (key.toLowerCase() == 'accept-encoding') return;
           try {
             request.headers.set(key, value);
           } catch (_) {
@@ -450,18 +466,12 @@ class NuvioEngineHttp {
           continue;
         }
 
-        var text = '';
-        try {
-          text = await response
-              .transform(const Utf8Decoder(allowMalformed: true))
-              .join()
-              .timeout(const Duration(seconds: 30));
-        } catch (_) {
-          text = '';
-        }
-        if (text.length > NuvioEngine.maxResponseChars) {
-          text = text.substring(0, NuvioEngine.maxResponseChars);
-        }
+        final text = await _readBody(
+          response,
+          _isMedia(response.headers.contentType)
+              ? mediaBodyLimit
+              : NuvioEngine.maxResponseChars,
+        );
 
         final responseHeaders = <String, String>{};
         response.headers.forEach((name, values) {
@@ -501,5 +511,52 @@ class NuvioEngineHttp {
     } catch (error) {
       return {errorKey: error.toString()};
     }
+  }
+
+  /// A video, audio or other binary body: a scraper fetching one only wants
+  /// to know it is there, and reading it whole cost the full read timeout.
+  static bool _isMedia(ContentType? type) {
+    if (type == null) return false;
+    final primary = type.primaryType.toLowerCase();
+    if (primary == 'video' || primary == 'audio') return true;
+    final mime = type.mimeType.toLowerCase();
+    return mime == 'application/octet-stream' ||
+        mime == 'application/x-matroska' ||
+        mime == 'application/zip';
+  }
+
+  /// At most [limit] bytes of [response], then the connection is dropped
+  /// rather than drained - the rest of a 5 GB file is not coming anyway.
+  static Future<String> _readBody(
+    HttpClientResponse response,
+    int limit,
+  ) async {
+    final bytes = BytesBuilder(copy: false);
+    final done = Completer<void>();
+    late final StreamSubscription<List<int>> subscription;
+    void finish() {
+      if (!done.isCompleted) done.complete();
+    }
+
+    subscription = response.listen(
+      (chunk) {
+        final room = limit - bytes.length;
+        if (chunk.length < room) {
+          bytes.add(chunk);
+          return;
+        }
+        if (room > 0) bytes.add(chunk.sublist(0, room));
+        unawaited(subscription.cancel());
+        finish();
+      },
+      onDone: finish,
+      onError: (Object _) => finish(),
+      cancelOnError: true,
+    );
+    await done.future.timeout(
+      const Duration(seconds: 30),
+      onTimeout: () => unawaited(subscription.cancel()),
+    );
+    return utf8.decode(bytes.takeBytes(), allowMalformed: true);
   }
 }

@@ -10,6 +10,7 @@ import '../../../../l10n/generated/app_localizations.dart';
 import '../../../settings/presentation/player_settings_provider.dart';
 import 'hotstar_player_style.dart';
 import '../../../skip/data/skip_service.dart';
+import '../../../../shared/focus/app_focus.dart';
 
 /// The seek bar row, driven entirely by plain values.
 ///
@@ -670,9 +671,10 @@ class _PlayerSeekBarState extends State<PlayerSeekBar> {
                 thumbHeight = 18.0;
                 thumbRadius = 2.0; // rounded-sm ≈ 2px
                 thumbOpacity = 1.0;
-              } else if (_isFocused) {
+              } else if (showFocusIndicator(context, _isFocused)) {
                 // The focused thumb is the D-pad's cursor, so it is the one
-                // state that has to read from across a room.
+                // state that has to read from across a room - and only for a
+                // D-pad or a keyboard: under a thumb it is not a cursor.
                 thumbWidth = widget.isTv ? 20.0 : 14.0;
                 thumbHeight = widget.isTv ? 20.0 : 14.0;
                 thumbRadius = thumbWidth / 2;

@@ -214,18 +214,33 @@ void main() {
       ).firstMatch(source);
       expect(shape, isNotNull, reason: 'putVideoShape not found');
       expect(
-        'currentVideoTrack'.allMatches(shape!.group(0)!).length,
+        'sizedVideoTrack()'.allMatches(shape!.group(0)!).length,
         1,
         reason: 'One read feeds both keys.',
       );
-    });
-
-    test('sends nothing at all until a video track exists', () {
-      // A shape guessed while the player is still opening is a rotation the
-      // device would act on and then have to undo.
+      expect(shape.group(0), isNot(contains('currentVideoTrack')));
+      // ...and once the track is sized, that read is the only one: the
+      // re-read that clears libvlc's stale cache is for an unsized track.
       expect(
         source,
-        contains('val track = mediaPlayer.currentVideoTrack ?: return'),
+        contains(
+          'val cached = mediaPlayer.currentVideoTrack ?: return null\n'
+          '        if (cached.width > 0 && cached.height > 0) {\n'
+          '            return cached',
+        ),
+      );
+    });
+
+    test('sends nothing at all until a sized video track exists', () {
+      // A shape guessed while the player is still opening is a rotation the
+      // device would act on and then have to undo.
+      expect(source, contains('val track = sizedVideoTrack() ?: return'));
+      expect(
+        source,
+        contains(
+          'mediaPlayer.currentVideoTrack?.takeIf '
+          '{ it.width > 0 && it.height > 0 }',
+        ),
       );
     });
 

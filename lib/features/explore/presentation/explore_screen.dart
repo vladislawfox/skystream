@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/config/tmdb_config.dart';
 import '../../settings/presentation/widgets/settings_dialogs.dart';
 import '../../../shared/widgets/cards_wrapper.dart';
+import '../../../shared/widgets/no_scrollbar_behavior.dart';
 import '../data/explore_tmdb_provider.dart';
 import '../data/explore_mode_provider.dart';
 import 'anilist_explore_screen.dart';
@@ -34,20 +35,6 @@ class ExploreScreen extends ConsumerStatefulWidget {
 
   @override
   ConsumerState<ExploreScreen> createState() => _ExploreScreenState();
-}
-
-/// Hides the platform scrollbar — replaced by a gradient edge hint.
-class _NoScrollbarBehavior extends ScrollBehavior {
-  const _NoScrollbarBehavior();
-
-  @override
-  Widget buildScrollbar(
-    BuildContext context,
-    Widget child,
-    ScrollableDetails details,
-  ) {
-    return child;
-  }
 }
 
 class _ExploreScreenState extends ConsumerState<ExploreScreen>
@@ -367,7 +354,7 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen>
     return Stack(
       children: [
         ScrollConfiguration(
-          behavior: const _NoScrollbarBehavior(),
+          behavior: const NoScrollbarBehavior(),
           child: scrollView,
         ),
         Positioned(
@@ -722,7 +709,11 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen>
           ViewAllCategory.airingTodayTV,
         ),
       ),
-      const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
+      SliverPadding(
+        padding: EdgeInsets.only(
+          bottom: LayoutConstants.shellBottomContentPadding(context),
+        ),
+      ),
     ];
   }
 

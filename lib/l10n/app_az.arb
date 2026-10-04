@@ -309,6 +309,8 @@
   "liveStreams": "Canlı yayımlar",
   "debug": "SAZLAMA",
   "extensionsUpdated": "{count, plural, =1{1 genişləndirmə yeniləndi} other{{count} genişləndirmə yeniləndi}}",
+  "extensionsNewRepositories": "{count, plural, =1{{source}: 1 yeni repozitoriya} other{{source}: {count} yeni repozitoriya}}",
+  "extensionsNewPlugins": "{count, plural, =1{{repository}: 1 yeni plagin} other{{repository}: {count} yeni plagin}}",
   "invalidNavigation": "Naviqasiya yanlışdır. Zəhmət olmasa geri qayıt.",
   "startOver": "Yenidən başla",
   "goBack": "Geri qayıt",

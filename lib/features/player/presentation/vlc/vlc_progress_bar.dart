@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:vlc_player/vlc_player.dart';
@@ -9,22 +7,23 @@ import '../widgets/player_stream_widgets.dart';
 
 /// The seek bar for the VLC engine.
 ///
-/// Thin by design: it holds only the drag position and the seek latch, and
-/// renders through the shared [PlayerScrubber], so the overlay cannot drift
-/// from the design the other engine gets.
+/// Thin by design: it holds only the drag position, and renders through the
+/// shared [PlayerScrubber], so the overlay cannot drift from the design the
+/// other engine gets.
 ///
 /// It listens to the controller directly rather than through Riverpod, so a
 /// position tick rebuilds this widget and nothing above it.
 ///
-/// The latch: after a seek the controller keeps publishing the engine's own
-/// position (a faked one would poison the resume point writer), so for up to a
-/// snapshot round-trip the thumb would jump back to where playback was. This
-/// widget holds the seek target in its place until the engine has evidently
-/// honoured the seek, the media stops, or a timeout longer than the
-/// controller's stall delay passes - so a genuine post-seek stall shows the
-/// spinner with the thumb still on the target. Relative D-pad steps chain from
-/// the latched target as a side effect, because the bar reads its start value
-/// from what is displayed.
+/// A seek on its way: the controller keeps publishing the engine's own
+/// position - a faked one would poison the resume point writer - and libVLC
+/// reports the place it left until the new one has been reached and
+/// refilled, which on a slow network file is seconds. The thumb shows the
+/// controller's [VlcPlayerController.pendingSeekTarget] in its place, from
+/// the moment any seek is asked for - this bar's, a double tap, a D-pad step,
+/// the skip chip - until the engine arrives, the way Media3 and the browsers
+/// report a seek. A slow one shows the spinner over a thumb that is still on
+/// the target. Relative D-pad steps chain from the target as a side effect,
+/// because the bar reads its start value from what is displayed.
 class VlcProgressBar extends StatefulWidget {
   const VlcProgressBar({
     this.bufferedFraction,
@@ -66,11 +65,10 @@ class VlcProgressBar extends StatefulWidget {
   /// Where this bar publishes the position it is *showing*, for a clock drawn
   /// outside it.
   ///
-  /// Not the engine's position: the whole point of the latch below is that
-  /// those two disagree for the length of a drag and for a round trip after
-  /// it. A desktop clock reading the controller directly would sit at the old
-  /// time while the thumb stood at the new one, which is exactly what a viewer
-  /// reads as a seek that did not take.
+  /// Not the engine's position: the two disagree for the length of a drag
+  /// and while a seek is on its way. A clock reading the controller directly
+  /// would sit at the old time while the thumb stood at the new one, which is
+  /// exactly what a viewer reads as a seek that did not take.
   ///
   /// Owned by the caller and written here, the way the screen owns the lock
   /// notifier the controls write. Null where nothing outside draws a clock.
@@ -102,44 +100,50 @@ class _VlcProgressBarState extends State<VlcProgressBar> {
   /// position during a scrub, and showing that would fight the thumb.
   Duration? _dragTo;
 
-  /// The seek target handed to the engine, shown in place of the published
-  /// position until [_onControllerValue] or [_pendingTimeout] releases it.
-  Duration? _pendingSeek;
-
-  /// The published position at commit: the origin the seek moved away from,
-  /// so a tick can be judged as "moved past the target" rather than merely
-  /// "moved".
-  Duration? _pendingFrom;
-
-  Timer? _pendingTimeout;
-
   /// Whether [VlcProgressBar.onSeekStart] has been reported without its end.
   bool _seeking = false;
-
-  /// How close the engine's read-back must land to count as arrived. Seeks
-  /// land on a keyframe, not on the millisecond asked for.
-  static const Duration _seekLatchTolerance = Duration(milliseconds: 750);
-
-  /// Must exceed [VlcPlayerController.stallIndicatorDelay]: a seek the engine
-  /// is slow to honour raises `isStalled` at that delay, and the spinner
-  /// should appear over a thumb that is still on the target.
-  Duration get _latchTimeout =>
-      widget.controller.stallIndicatorDelay + const Duration(milliseconds: 500);
 
   @override
   void initState() {
     super.initState();
-    widget.controller.addListener(_onControllerValue);
+    _listen(widget.controller);
     // The clock's own seed covers the frame this runs after; this is what
     // corrects it if the bar was handed a notifier another controller filled.
     _publishAfterFrame();
   }
 
+  void _listen(VlcPlayerController controller) {
+    controller.addListener(_publish);
+    controller.pendingSeekTarget.addListener(_onSeekTarget);
+  }
+
+  void _stopListening(VlcPlayerController controller) {
+    controller.removeListener(_publish);
+    controller.pendingSeekTarget.removeListener(_onSeekTarget);
+  }
+
   /// The position this bar is showing: the finger, then a seek the engine has
-  /// not caught up with, then the engine. The one rule, so [build] and
+  /// not arrived at, then the engine. The one rule, so [build] and
   /// [VlcProgressBar.displayPosition] cannot answer differently.
-  Duration get _shown =>
-      _dragTo ?? _pendingSeek ?? widget.controller.value.position;
+  ///
+  /// A target needs a length to be drawn against; with none, the media under
+  /// the controller has changed and the target was the old one's.
+  Duration get _shown {
+    final value = widget.controller.value;
+    final target = value.duration > Duration.zero
+        ? widget.controller.pendingSeekTarget.value
+        : null;
+    return _dragTo ?? target ?? value.position;
+  }
+
+  /// A seek was asked for, or arrived: the thumb and the clock move with it.
+  /// Both are outside a build - [VlcPlayerController.seekTo] and the
+  /// controller's own notifications - so a setState is owed.
+  void _onSeekTarget() {
+    if (!mounted) return;
+    setState(() {});
+    _publish();
+  }
 
   /// Hands the current answer to the outside clock.
   ///
@@ -166,19 +170,17 @@ class _VlcProgressBarState extends State<VlcProgressBar> {
   void didUpdateWidget(VlcProgressBar oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller == widget.controller) return;
-    oldWidget.controller.removeListener(_onControllerValue);
-    widget.controller.addListener(_onControllerValue);
-    // New media, new engine: whatever was latched was a target for the old
-    // one. The build that follows this call already reads the cleared state.
-    _clearLatch();
+    _stopListening(oldWidget.controller);
+    _listen(widget.controller);
+    // New media, new engine: a seek on its way was the old one's, and the new
+    // controller has none of its own yet.
     _endSeek(null);
     _publishAfterFrame();
   }
 
   @override
   void dispose() {
-    widget.controller.removeListener(_onControllerValue);
-    _pendingTimeout?.cancel();
+    _stopListening(widget.controller);
     super.dispose();
   }
 
@@ -213,90 +215,12 @@ class _VlcProgressBarState extends State<VlcProgressBar> {
     });
   }
 
-  /// Hands [target] to the engine and latches it for display.
+  /// Hands [target] to the engine, which publishes it as the seek on its way
+  /// - see [_shown].
   void _commitSeek(Duration target) {
-    _pendingFrom = widget.controller.value.position;
-    _pendingSeek = target;
-    _pendingTimeout?.cancel();
-    _pendingTimeout = Timer(_latchTimeout, _releaseLatch);
     widget.controller.seekTo(target);
     setState(() => _dragTo = null);
     _publish();
-  }
-
-  /// Evaluated on every published value while a seek is latched.
-  void _onControllerValue() {
-    final target = _pendingSeek;
-    final from = _pendingFrom;
-    if (target == null || from == null) {
-      // No latch, so the engine's position is the one being shown and every
-      // tick moves the clock.
-      _publish();
-      return;
-    }
-    final value = widget.controller.value;
-    if (_seekHonoured(value, target: target, from: from) ||
-        !_stillPlayable(value)) {
-      _releaseLatch();
-    }
-  }
-
-  /// Whether [value] shows the engine has taken the seek: it landed within
-  /// tolerance of [target], or it has moved past the target in the direction
-  /// of the seek. A tick that merely continues from [from], or one somewhere
-  /// between origin and target, holds the latch - after a chained burst that
-  /// may be the previous seek landing rather than this one.
-  static bool _seekHonoured(
-    VlcPlayerValue value, {
-    required Duration target,
-    required Duration from,
-  }) {
-    final position = value.position;
-    if ((position - target).abs() <= _seekLatchTolerance) return true;
-    if (target == from) return false;
-    final travelled = position - from;
-    final asked = target - from;
-    return travelled.isNegative == asked.isNegative &&
-        travelled.abs() >= asked.abs();
-  }
-
-  /// A latch is only meaningful while the engine may still arrive at the
-  /// target. Paused is fine - a paused seek still lands - but a stopped, ended
-  /// or errored engine never will, and neither will one whose duration has
-  /// gone back to zero because the media changed under it.
-  static bool _stillPlayable(VlcPlayerValue value) {
-    if (value.duration <= Duration.zero) return false;
-    return switch (value.state) {
-      VlcPlaybackState.idle ||
-      VlcPlaybackState.stopped ||
-      VlcPlaybackState.ended ||
-      VlcPlaybackState.error => false,
-      VlcPlaybackState.opening ||
-      VlcPlaybackState.buffering ||
-      VlcPlaybackState.playing ||
-      VlcPlaybackState.paused => true,
-    };
-  }
-
-  /// Called from the controller listener or the timeout: both are outside a
-  /// build, so a setState is owed.
-  void _releaseLatch() {
-    if (_pendingSeek == null && _pendingTimeout == null) return;
-    if (!mounted) {
-      _clearLatch();
-      return;
-    }
-    setState(_clearLatch);
-    // After the clear, so the clock picks up the engine rather than the target
-    // it has just let go of.
-    _publish();
-  }
-
-  void _clearLatch() {
-    _pendingTimeout?.cancel();
-    _pendingTimeout = null;
-    _pendingSeek = null;
-    _pendingFrom = null;
   }
 
   @override
@@ -327,9 +251,9 @@ class _VlcProgressBarState extends State<VlcProgressBar> {
     if (!canSeek && _seeking) _abandonSeek();
 
     return PlayerScrubber(
-      // The finger, then the seek the engine has not caught up with, then
-      // the engine. The clock reads the same value, so it follows too -
-      // wherever it is drawn. See [_shown].
+      // The finger, then the seek the engine has not arrived at, then the
+      // engine. The clock reads the same value, so it follows too - wherever
+      // it is drawn. See [_shown].
       position: _shown,
       duration: duration,
       hasDuration: hasDuration,

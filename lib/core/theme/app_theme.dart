@@ -77,11 +77,11 @@ class AppTheme {
   /// locked. This is the fix for that, and because it is a theme every button,
   /// tab and list row in the app gets it without being touched.
   ///
-  /// Material only resolves [WidgetState.focused] for a node that actually
-  /// holds focus, and neither an [InkWell] tap nor a mouse click moves focus,
-  /// so nothing here can fire for a touch. The custom affordances that are not
-  /// Material controls go through [FocusVisibility] instead - see
-  /// `shared/focus/app_focus.dart`.
+  /// Material reports [WidgetState.focused] for any button that holds focus,
+  /// and a button can hold it under a thumb - autofocused for a remote, or
+  /// handed focus back as a dialog closes - so the ring also asks
+  /// [FocusVisibility], the one rule every focus indicator in the app follows.
+  /// See `shared/focus/app_focus.dart`.
   static FilledButtonThemeData _filledButtonTheme(ColorScheme cs) =>
       FilledButtonThemeData(style: ButtonStyle(side: AppFocus.buttonSide(cs)));
 
@@ -301,7 +301,8 @@ class AppTheme {
       // Switch Theme
       switchTheme: SwitchThemeData(
         thumbIcon: WidgetStateProperty.resolveWith<Icon?>((states) {
-          if (states.contains(WidgetState.focused) ||
+          if ((states.contains(WidgetState.focused) &&
+                  FocusVisibility.visible) ||
               states.contains(WidgetState.hovered)) {
             if (states.contains(WidgetState.selected)) {
               return const Icon(Icons.check_rounded, size: 14);
@@ -485,7 +486,8 @@ class AppTheme {
       // Switch Theme
       switchTheme: SwitchThemeData(
         thumbIcon: WidgetStateProperty.resolveWith<Icon?>((states) {
-          if (states.contains(WidgetState.focused) ||
+          if ((states.contains(WidgetState.focused) &&
+                  FocusVisibility.visible) ||
               states.contains(WidgetState.hovered)) {
             if (states.contains(WidgetState.selected)) {
               return const Icon(Icons.check_rounded, size: 14);

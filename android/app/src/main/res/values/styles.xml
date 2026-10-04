@@ -15,5 +15,13 @@
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
         <item name="android:windowBackground">?android:colorBackground</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <!-- No system focus ring around the Flutter view. Android draws one on
+             whatever view holds focus once a key has been pressed - on a
+             television, always - and here that view is the whole app: a
+             coloured band round the edge of the screen that no tap cleared.
+             SkyStream draws its own indicators, and only for a remote or a
+             keyboard (lib/shared/focus/app_focus.dart). Ignored below API 26,
+             where there is no such ring. -->
+        <item name="android:defaultFocusHighlightEnabled">false</item>
     </style>
 </resources>

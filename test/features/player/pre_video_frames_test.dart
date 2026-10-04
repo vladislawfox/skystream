@@ -10,6 +10,7 @@ import 'package:http/testing.dart';
 import 'package:skystream/core/domain/entity/multimedia_item.dart';
 import 'package:skystream/core/extensions/base_provider.dart';
 import 'package:skystream/core/extensions/extension_manager.dart';
+import 'package:skystream/core/storage/history_repository.dart';
 import 'package:skystream/features/player/domain/playback_recovery.dart'
     show kFirstFrameDeadline;
 import 'package:skystream/features/player/presentation/vlc/player_startup_view.dart';
@@ -450,9 +451,19 @@ void main() {
       final engine = FakeVlcEngine();
       installEngineMocks(engine: engine);
       final fourAnswers = Completer<void>();
+      // Answers the way a media server does, serving the probe's range: a
+      // plain 200 would say the server ignores ranges, which the row calls
+      // "Can't seek" rather than "Reachable".
       final client = MockClient((request) async {
         if (request.url.path == '/four.mkv') await fourAnswers.future;
-        return http.Response('', 200);
+        return http.Response(
+          '',
+          206,
+          headers: {
+            'content-type': 'video/x-matroska',
+            'content-range': 'bytes 0-1023/1048576',
+          },
+        );
       });
 
       await http.runWithClient(() async {
@@ -699,6 +710,83 @@ void main() {
     },
   );
 
+  // A resume opens the source at its saved place, and libVLC reports the
+  // position as zero until the new media has played anything. The drop from
+  // the saved place to zero counted as the position moving - the only proof
+  // of a picture the screen accepts - so the loading screen gave way to a
+  // black screen and the controls before anything had been drawn.
+  testWidgets(
+    'a resumed source reporting zero while it opens has not drawn a picture',
+    variant: texturePlatform,
+    (tester) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: const <StreamResult>[
+          StreamResult(url: '/sources/film.mkv', source: '1080p'),
+        ],
+        overrides: [
+          historyRepositoryProvider.overrideWithValue(_ResumeAtTenMinutes()),
+        ],
+      );
+      expect(find.byKey(openingOverlayKey), findsOneWidget);
+
+      await sendEvent(tester, snapshot(state: 'opening', position: 0));
+      expect(
+        find.byKey(openingOverlayKey),
+        findsOneWidget,
+        reason: 'zero is the engine saying nothing has played yet',
+      );
+
+      await sendEvent(tester, snapshot(position: 600250, duration: 1200000));
+      expect(find.byKey(openingOverlayKey), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  // Resuming, a row picked on the loading screen while the first source was
+  // still opening: the pick reopens at the saved place, and the engine, on
+  // its way into the new source, reports zero. That counted as a picture, so
+  // the loading screen went, and the new source's first moments - playing,
+  // with no length yet and nothing to seek in, which libVLC calls live - read
+  // as LIVE over a black screen.
+  testWidgets(
+    'a row picked while a resumed source opens keeps the loading screen up',
+    variant: texturePlatform,
+    (tester) async {
+      final engine = FakeVlcEngine();
+      installEngineMocks(engine: engine);
+      final l10n = await AppLocalizations.delegate.load(const Locale('en'));
+      await pumpPlayer(
+        tester,
+        preloadedStreams: const <StreamResult>[
+          StreamResult(url: '/sources/one.mkv', source: 'One'),
+          StreamResult(url: '/sources/two.mkv', source: 'Two'),
+          StreamResult(url: '/sources/three.mkv', source: 'Three'),
+        ],
+        overrides: [
+          historyRepositoryProvider.overrideWithValue(_ResumeAtTenMinutes()),
+        ],
+      );
+      expect(openedUri(engine), endsWith('one.mkv'));
+
+      await tester.tap(find.byKey(PlayerStartupView.rowKey(2)));
+      await settle(tester);
+      expect(openedUri(engine), endsWith('three.mkv'));
+
+      await sendEvent(tester, <String, Object?>{
+        ...snapshot(position: 0),
+        'isSeekable': false,
+        'isLive': true,
+      });
+
+      expect(find.byKey(openingOverlayKey), findsOneWidget);
+      expect(find.text(l10n.live), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets(
     'failover walks past a row the check found unreachable',
     variant: texturePlatform,
@@ -739,6 +827,16 @@ void main() {
       }, () => client);
     },
   );
+}
+
+/// Ten minutes into a twenty-minute film, so the screen opens its source at a
+/// saved place.
+class _ResumeAtTenMinutes extends NoHistory {
+  @override
+  int getPosition(String url) => 600000;
+
+  @override
+  int getDuration(String url) => 1200000;
 }
 
 /// A plugin whose `loadStreams` answers when the test says so.

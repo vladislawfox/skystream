@@ -284,6 +284,8 @@
   "liveStreams": "שידורים חיים",
   "debug": "ניפוי שגיאות",
   "extensionsUpdated": "{count, plural, one{הרחבה אחת עודכנה} other{{count} הרחבות עודכנו}}",
+  "extensionsNewRepositories": "{count, plural, one{מאגר חדש ב-{source}} other{{count} מאגרים חדשים ב-{source}}}",
+  "extensionsNewPlugins": "{count, plural, one{פלאגין חדש ב-{repository}} other{{count} פלאגינים חדשים ב-{repository}}}",
   "invalidNavigation": "ניווט לא תקין.",
   "startOver": "התחל מחדש",
   "goBack": "חזור",

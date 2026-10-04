@@ -284,6 +284,8 @@
   "liveStreams": "Élő adások",
   "debug": "DEBUG",
   "extensionsUpdated": "{count, plural, one{1 bővítmény frissítve} other{{count} bővítmény frissítve}}",
+  "extensionsNewRepositories": "{count, plural, one{{source}: 1 új tároló} other{{source}: {count} új tároló}}",
+  "extensionsNewPlugins": "{count, plural, one{{repository}: 1 új bővítmény} other{{repository}: {count} új bővítmény}}",
   "invalidNavigation": "Érvénytelen navigáció.",
   "startOver": "Újrakezdés",
   "goBack": "Vissza",

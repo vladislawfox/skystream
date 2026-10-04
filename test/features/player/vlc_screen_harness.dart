@@ -20,6 +20,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -36,6 +37,7 @@ import 'package:skystream/core/storage/settings_repository.dart';
 import 'package:skystream/core/storage/storage_service.dart';
 import 'package:skystream/core/providers/device_info_provider.dart';
 import 'package:skystream/features/library/presentation/history_provider.dart';
+import 'package:skystream/features/player/presentation/vlc/side_car_fetch.dart';
 import 'package:skystream/features/player/presentation/vlc/vlc_player_screen.dart';
 import 'package:skystream/features/settings/presentation/player_settings_provider.dart';
 import 'package:skystream/features/tracking/data/sync_manager.dart';
@@ -327,6 +329,9 @@ Future<void> sendBack(WidgetTester tester) async {
 /// test can see that it went; the default hosts it as `home`, where Back
 /// would leave the app instead.
 ///
+/// Subtitle files are served by [servedSubtitle] unless [overrides] brings
+/// its own `sideCarFetchProvider`.
+///
 /// The sync manager is stood up with no tracking services unless [overrides]
 /// brings its own: the real one watches four services none of this plumbing
 /// answers for, so the scrobble a snapshot with a real length triggers would
@@ -400,6 +405,8 @@ Future<void> pumpPlayer(
           syncManagerProvider.overrideWithValue(
             SyncManager(const <TrackingService>[]),
           ),
+        if (!brought(sideCarFetchProvider))
+          sideCarFetchProvider.overrideWithValue(servedSubtitle),
         ...overrides,
       ],
       child: MaterialApp(
@@ -421,3 +428,12 @@ Future<void> pumpPlayer(
   // async gaps; so is the push transition.
   await settle(tester);
 }
+
+/// Every subtitle file the screen reads, served from memory: one line, the
+/// file's own name, on screen for the first ten hours. A test tells which
+/// file is showing by finding its name.
+Future<List<int>?> servedSubtitle(
+  Uri url,
+  Map<String, String>? headers,
+) async =>
+    utf8.encode('1\n00:00:00,000 --> 10:00:00,000\n${url.pathSegments.last}\n');

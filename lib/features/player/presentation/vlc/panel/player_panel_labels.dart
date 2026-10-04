@@ -11,6 +11,7 @@ import '../../../../../core/domain/entity/multimedia_item.dart';
 import '../../../../../core/utils/stream_quality_sorter.dart';
 import '../../../../../l10n/generated/app_localizations.dart';
 import '../../../domain/source_row_status.dart';
+import '../../../domain/track_language.dart';
 
 /// The word a source row shows for what the reachability check found. Shared
 /// by the startup screen's list and the Sources tab, which render it
@@ -21,10 +22,12 @@ String sourceReachabilityLabel(
 ) => switch (reachability) {
   SourceReachability.checking => l10n.playerSourceChecking,
   SourceReachability.reachable => l10n.playerSourceReachable,
+  SourceReachability.unseekable => l10n.playerSourceCannotSeek,
   // "Unknown", not "unreachable": the check got no answer, which a slow host
   // or one that refuses test requests gives too, and such a link can still
   // play. The word claims no more than the check knows.
   SourceReachability.unreachable => l10n.unknown,
+  SourceReachability.notVideo => l10n.playerSourceNotVideo,
   SourceReachability.notChecked => l10n.playerSourceNotChecked,
 };
 
@@ -204,100 +207,12 @@ String? _bitrateName(int? bitrate) {
   return '${(bitrate / 1000).round()} kbps';
 }
 
-/// The languages a stream is realistically in, by both ISO 639-1 and 639-2.
-///
-/// Not a complete table on purpose: the fallback prints the code the engine
-/// gave, which is honest, whereas a half-remembered mapping is not.
-const Map<String, String> _languageNames = <String, String>{
-  'ar': 'Arabic',
-  'ara': 'Arabic',
-  'bg': 'Bulgarian',
-  'bul': 'Bulgarian',
-  'bn': 'Bengali',
-  'ben': 'Bengali',
-  'cs': 'Czech',
-  'cze': 'Czech',
-  'ces': 'Czech',
-  'da': 'Danish',
-  'dan': 'Danish',
-  'de': 'German',
-  'ger': 'German',
-  'deu': 'German',
-  'el': 'Greek',
-  'gre': 'Greek',
-  'ell': 'Greek',
-  'en': 'English',
-  'eng': 'English',
-  'es': 'Spanish',
-  'spa': 'Spanish',
-  'fa': 'Persian',
-  'per': 'Persian',
-  'fas': 'Persian',
-  'fi': 'Finnish',
-  'fin': 'Finnish',
-  'fr': 'French',
-  'fre': 'French',
-  'fra': 'French',
-  'he': 'Hebrew',
-  'heb': 'Hebrew',
-  'hi': 'Hindi',
-  'hin': 'Hindi',
-  'hr': 'Croatian',
-  'hrv': 'Croatian',
-  'hu': 'Hungarian',
-  'hun': 'Hungarian',
-  'id': 'Indonesian',
-  'ind': 'Indonesian',
-  'it': 'Italian',
-  'ita': 'Italian',
-  'ja': 'Japanese',
-  'jpn': 'Japanese',
-  'ko': 'Korean',
-  'kor': 'Korean',
-  'ml': 'Malayalam',
-  'mal': 'Malayalam',
-  'ms': 'Malay',
-  'may': 'Malay',
-  'msa': 'Malay',
-  'nl': 'Dutch',
-  'dut': 'Dutch',
-  'nld': 'Dutch',
-  'no': 'Norwegian',
-  'nor': 'Norwegian',
-  'pl': 'Polish',
-  'pol': 'Polish',
-  'pt': 'Portuguese',
-  'por': 'Portuguese',
-  'ro': 'Romanian',
-  'rum': 'Romanian',
-  'ron': 'Romanian',
-  'ru': 'Russian',
-  'rus': 'Russian',
-  'sv': 'Swedish',
-  'swe': 'Swedish',
-  'ta': 'Tamil',
-  'tam': 'Tamil',
-  'te': 'Telugu',
-  'tel': 'Telugu',
-  'th': 'Thai',
-  'tha': 'Thai',
-  'tr': 'Turkish',
-  'tur': 'Turkish',
-  'uk': 'Ukrainian',
-  'ukr': 'Ukrainian',
-  'vi': 'Vietnamese',
-  'vie': 'Vietnamese',
-  'zh': 'Chinese',
-  'chi': 'Chinese',
-  'zho': 'Chinese',
-};
-
 String? _languageName(String? language) {
   final value = language?.trim();
   if (value == null || value.isEmpty || value.toLowerCase() == 'und') {
     return null;
   }
-  final mapped = _languageNames[value.toLowerCase()];
+  final mapped = languageNameForCode(value);
   if (mapped != null) return mapped;
   // Already a name rather than a code, most likely: `Brazilian Portuguese`.
   if (value.length > 3) return value;

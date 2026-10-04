@@ -114,6 +114,13 @@ class _ExploreCarouselState extends ConsumerState<ExploreCarousel>
     _fillController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 5),
+      // A clock, not an animation. On the default behaviour Flutter runs a
+      // controller at 5% of its duration while the platform asks for
+      // animations to be removed - Android's "Animation off" transition scale,
+      // and the fast animation modes some phones map onto it - and the
+      // five-second dwell became a quarter of a second. The slide transition
+      // above may still collapse under that setting; the dwell may not.
+      animationBehavior: AnimationBehavior.preserve,
     );
     _fillController.addStatusListener((status) {
       if (status == AnimationStatus.completed && mounted) {

@@ -1,4 +1,4 @@
-platform :osx, '10.15'
+platform :osx, '12.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -37,9 +37,9 @@ end
 
 post_install do |installer|
   installer.pods_project.targets.each do |target|
+    # No MACOSX_DEPLOYMENT_TARGET force: pinning pods to 10.15 fails on Xcode
+    # releases that support 12.0 and up, and flutter_additional_macos_build_settings
+    # already aligns each pod with the Runner - the host app's Podfile does the same.
     flutter_additional_macos_build_settings(target)
-    target.build_configurations.each do |config|
-      config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '10.15'
-    end
   end
 end

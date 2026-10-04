@@ -18,6 +18,9 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.view.TextureRegistry
 import java.io.ByteArrayOutputStream
+import java.lang.reflect.Field
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
@@ -42,12 +45,28 @@ internal class VlcPlayerPlatformView(
     fit: String,
     private val target: VlcRenderTarget,
     private val onDispose: (Long, VlcPlayerPlatformView) -> Unit,
-) : PlatformView, MediaPlayer.EventListener {
+) : PlatformView {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val videoLayout: VLCVideoLayout? = (target as? VlcRenderTarget.VideoLayout)?.layout
     private val libVLC = LibVLC(context, options)
-    private val mediaPlayer = MediaPlayer(libVLC)
+
+    /// The libVLC player currently playing for this view.
+    ///
+    /// Not fixed for the life of the view: a new source gets a fresh one, and
+    /// the one it replaces is released off the main thread - see
+    /// [replacePlayer] for why that is the only safe way to leave a stream.
+    private var mediaPlayer = MediaPlayer(libVLC)
+
+    /// What [setSource] last loaded, so [stop] can leave it loaded on the
+    /// player that replaces the stopped one, as libVLC's own stop does.
+    private var lastSource: Source? = null
     private var videoScale = scaleTypeFor(fit)
+
+    /// The crop and aspect ratio the widget's fit needs; see
+    /// [setVideoGeometry]. Kept here because every new source gets a fresh
+    /// player, which has to be told again.
+    private var cropGeometry: String? = null
+    private var aspectRatio: String? = null
     private val eventChannel = EventChannel(messenger, "vlc_player/events/$viewIdentifier")
     private val streamHandler = StreamHandler()
     private val viewId = viewIdentifier
@@ -98,15 +117,22 @@ internal class VlcPlayerPlatformView(
         }
     }
     private val videoLayoutListener = IVLCVout.OnNewVideoLayoutListener {
-        _, width, height, visibleWidth, visibleHeight, _, _ ->
+        vout, width, height, visibleWidth, visibleHeight, _, _ ->
+        // A replaced player's last word on its layout is not this picture.
+        if (vout !== mediaPlayer.vlcVout) return@OnNewVideoLayoutListener
         onNewVideoLayout(
             if (visibleWidth > 0) visibleWidth else width,
             if (visibleHeight > 0) visibleHeight else height,
         )
     }
+
+    /// Shared by every player this view has had, so each callback checks it is
+    /// about the current one: a replaced player tearing down off the main
+    /// thread still reports its surfaces going, and acting on that would
+    /// detach the views the new player has just been given.
     private val voutCallback = object : IVLCVout.Callback {
         override fun onSurfacesCreated(vlcVout: IVLCVout) {
-            if (disposed) {
+            if (disposed || vlcVout !== mediaPlayer.vlcVout) {
                 return
             }
             viewsAttached = true
@@ -115,12 +141,15 @@ internal class VlcPlayerPlatformView(
         }
 
         override fun onSurfacesDestroyed(vlcVout: IVLCVout) {
+            if (vlcVout !== mediaPlayer.vlcVout) {
+                return
+            }
             viewsAttached = false
             if (disposed || detachingViews) {
                 return
             }
             mainHandler.post {
-                if (!disposed) {
+                if (!disposed && vlcVout === mediaPlayer.vlcVout) {
                     releaseViews()
                     scheduleAttachViews()
                 }
@@ -201,8 +230,7 @@ internal class VlcPlayerPlatformView(
             }
             is VlcRenderTarget.Texture -> target.producer.setCallback(surfaceCallback)
         }
-        mediaPlayer.setEventListener(this)
-        mediaPlayer.vlcVout.addCallback(voutCallback)
+        connect(mediaPlayer)
         // The view target waits for its layout to reach a window; the texture's
         // surface exists now, and Dart's setSource follows create on the very
         // next message, so the vout has to be in place before that lands.
@@ -229,19 +257,18 @@ internal class VlcPlayerPlatformView(
         }
 
         try {
-            val media = Media(libVLC, Uri.parse(uri))
+            // A player that has had a source gets replaced rather than handed
+            // the next one - see replacePlayer.
+            if (lastSource != null) {
+                replacePlayer()
+            }
             // HTTP headers are translated to libVLC options in Dart
             // (vlc_http_headers.dart). libVLC 3.x can transmit only
             // User-Agent and Referer; there is no `http-header` option, and
             // emitting one here silently dropped every header.
-            mediaOptions.forEach { option ->
-                media.addOption(option)
-            }
-            if (startPosition > 0L) {
-                media.addOption(":start-time=${startPosition / 1000.0}")
-            }
-            mediaPlayer.media = media
-            media.release()
+            val source = Source(uri, mediaOptions, startPosition)
+            load(source)
+            lastSource = source
             errorCode = null
             errorDescription = null
             lastSentEvent = null
@@ -258,6 +285,95 @@ internal class VlcPlayerPlatformView(
             result.error(ERROR_SET_SOURCE_FAILED, error.message, null)
         }
     }
+
+    /// Sets [source] as the current player's media.
+    private fun load(source: Source) {
+        val media = Media(libVLC, Uri.parse(source.uri))
+        source.mediaOptions.forEach { option ->
+            media.addOption(option)
+        }
+        if (source.startPosition > 0L) {
+            media.addOption(":start-time=${source.startPosition / 1000.0}")
+        }
+        mediaPlayer.media = media
+        media.release()
+    }
+
+    /// Wires [player]'s events and surface callbacks to this view.
+    private fun connect(player: MediaPlayer) {
+        player.setEventListener(PlayerEvents(player))
+        player.vlcVout.addCallback(voutCallback)
+    }
+
+    /// Puts a fresh libVLC player in place of the current one and releases the
+    /// old one off the main thread.
+    ///
+    /// libVLC 3 leaves a stream synchronously: `set_media` and `stop` both
+    /// stop the input thread and wait for it to exit, holding the player's
+    /// input lock the whole time, and every read of the player - time,
+    /// length, tracks - takes that lock too. A live stream whose segment read
+    /// has stalled keeps the input thread alive for as long as the read
+    /// lasts; SkyStream caught its main thread 15 s deep in
+    /// `libvlc_media_player_stop` -> `input_Close` -> `vlc_join`. The main
+    /// thread is also Flutter's UI thread, so the app froze and Android killed
+    /// it as not responding, on switching source or on pressing back.
+    ///
+    /// A fresh player has no input to wait for and shares no lock with the
+    /// old one, so the next source starts at once, whatever the old one is
+    /// stuck in. The settings the host made on the player, which libVLC
+    /// keeps per player and not per media, are carried across.
+    private fun replacePlayer() {
+        val retired = mediaPlayer
+        retired.setEventListener(null)
+        retired.vlcVout.removeCallback(voutCallback)
+        // Detached here, on the main thread and before anything else touches
+        // it: the views belong to this view, not to the player.
+        releaseViews()
+
+        mediaPlayer = MediaPlayer(libVLC)
+        connect(mediaPlayer)
+        mediaPlayer.rate = playbackSpeed
+        applyVolume()
+        applyVideoGeometry(mediaPlayer)
+        attachViewsIfNeeded()
+
+        releaser.execute {
+            retired.stop()
+            retired.release()
+        }
+    }
+
+    /// Routes one player's events to this view, and drops them once that
+    /// player has been replaced.
+    ///
+    /// libVLC hands events over as runnables that captured the listener, so a
+    /// replaced player's last events - the Stopped of its own teardown above
+    /// all - can still arrive afterwards, and would read as the new source
+    /// stopping.
+    private inner class PlayerEvents(
+        private val player: MediaPlayer,
+    ) : MediaPlayer.EventListener {
+        override fun onEvent(event: MediaPlayer.Event) {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                dispatch(event)
+            } else {
+                mainHandler.post { dispatch(event) }
+            }
+        }
+
+        private fun dispatch(event: MediaPlayer.Event) {
+            if (player === mediaPlayer) {
+                handlePlayerEvent(event)
+            }
+        }
+    }
+
+    /// A source as [setSource] was given it, kept so [stop] can reload it.
+    private data class Source(
+        val uri: String,
+        val mediaOptions: List<String>,
+        val startPosition: Long,
+    )
 
     private fun isValidHeader(name: String, value: String): Boolean {
         return name.isNotBlank() &&
@@ -296,7 +412,11 @@ internal class VlcPlayerPlatformView(
         }
         audioFocus.abandon()
         clearInterruption()
-        mediaPlayer.stop()
+        // Not mediaPlayer.stop(), which waits on the stream on this thread -
+        // see replacePlayer. The source stays loaded on the fresh player, so a
+        // play() after stop() starts it again, as it does on libVLC's own stop.
+        replacePlayer()
+        lastSource?.let(::load)
         updateState(STATE_STOPPED)
         result.success(null)
     }
@@ -580,25 +700,31 @@ internal class VlcPlayerPlatformView(
             is VlcRenderTarget.Texture -> target.producer.setCallback(null)
         }
         mediaPlayer.vlcVout.removeCallback(voutCallback)
-        mediaPlayer.stop()
+        // Detached here, on the main thread, where the views live.
         releaseViews()
-        // Producer between the vout and the player: releasing it closes the
-        // ImageReader behind the surface, so libVLC has to have let go of that
-        // surface first (releaseViews, above) and the player, which no longer
-        // has anywhere to draw, goes last.
-        if (target is VlcRenderTarget.Texture) {
-            target.producer.release()
-        }
-        mediaPlayer.release()
-        libVLC.release()
         onDispose(viewId, this)
-    }
 
-    override fun onEvent(event: MediaPlayer.Event) {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            handlePlayerEvent(event)
-        } else {
-            mainHandler.post { handlePlayerEvent(event) }
+        // Everything that waits on libVLC's threads happens off the main
+        // thread - see replacePlayer. stop() on a stalled live stream held it
+        // for as long as the download hung, and pressing back got the app
+        // killed as not responding.
+        //
+        // The order is the one this always had. The producer sits between the
+        // vout and the player: releasing it closes the ImageReader behind the
+        // surface, so the player has to have stopped drawing into it first,
+        // and the player, with nowhere left to draw, goes before the instance.
+        val player = mediaPlayer
+        val producer = (target as? VlcRenderTarget.Texture)?.producer
+        releaser.execute {
+            player.stop()
+            mainHandler.post {
+                // Texture registry calls belong on the platform thread.
+                producer?.release()
+                releaser.execute {
+                    player.release()
+                    libVLC.release()
+                }
+            }
         }
     }
 
@@ -775,6 +901,31 @@ internal class VlcPlayerPlatformView(
         videoScale = scaleTypeFor(fit)
         mediaPlayer.setVideoScale(videoScale)
         result.success(null)
+    }
+
+    /// Has libVLC crop the picture to the view's shape (Zoom), give it the
+    /// view's aspect ratio (Stretch), or neither (Fit), as the widget
+    /// computed from its fit and size.
+    ///
+    /// Done in libVLC rather than by sizing the view, because libVLC draws the
+    /// subtitles: a view larger than the screen took them off its bottom edge
+    /// and enlarged them, and libvlc-android's view sizing never worked on
+    /// hardware-decoded video at all - it needs a size report only the native
+    /// display sends, while MediaCodec output is shown by the OpenGL one.
+    fun setVideoGeometry(crop: String?, aspect: String?, result: MethodChannel.Result) {
+        if (disposed) {
+            result.error("disposed", "This player has been disposed.", null)
+            return
+        }
+        cropGeometry = crop?.takeIf { it.isNotEmpty() }
+        aspectRatio = aspect?.takeIf { it.isNotEmpty() }
+        applyVideoGeometry(mediaPlayer)
+        result.success(null)
+    }
+
+    private fun applyVideoGeometry(player: MediaPlayer) {
+        player.aspectRatio = aspectRatio
+        VlcNativeGeometry.setCrop(player, cropGeometry)
     }
 
     private fun attachViewsIfNeeded() {
@@ -992,9 +1143,9 @@ internal class VlcPlayerPlatformView(
     /**
      * Puts the video's stored size and its rotation into the snapshot.
      *
-     * One function, and one read of `currentVideoTrack`, because that property
-     * walks the media's track array every time it is touched and this runs on
-     * every snapshot.
+     * One function, and one read of `currentVideoTrack` once the track is
+     * sized, because that property walks the media's track array every time it
+     * is touched and this runs on every snapshot.
      *
      * `videoSize` stays the *stored* size - the elementary stream's own width
      * and height - because that is what this key means on every other platform
@@ -1004,19 +1155,67 @@ internal class VlcPlayerPlatformView(
      * to get the shape a viewer sees, and Dart is where that happens: it is the
      * only side of this channel the project's CI runs tests on.
      *
-     * Nothing is sent before the first video track exists. `currentVideoTrack`
-     * is null while the player is still opening, which is exactly when a shape
-     * would be a guess.
+     * Nothing is sent before the first video track exists and has a size.
+     * `currentVideoTrack` is null while the player is still opening, which is
+     * exactly when a shape would be a guess.
      */
     private fun putVideoShape(event: HashMap<String, Any?>) {
-        val track = mediaPlayer.currentVideoTrack ?: return
-        val width = track.width
-        val height = track.height
-        if (width <= 0 || height <= 0) {
-            return
-        }
-        event["videoSize"] = mapOf("width" to width, "height" to height)
+        val track = sizedVideoTrack() ?: return
+        event["videoSize"] = mapOf("width" to track.width, "height" to track.height)
         event["videoOrientation"] = track.orientation
+    }
+
+    /**
+     * The current video track, once libVLC knows its size.
+     *
+     * libvlc-android's `Media` caches its track array the first time anything
+     * asks for it, and only a `ParsedChanged` event clears that copy - which
+     * playback never raises. MP4 and MKV declare their size in the container,
+     * so the first read is already right. MPEG-TS does not, and neither does
+     * HLS, which is TS segments behind a playlist: the video track exists
+     * before the decoder has parsed a frame, and a read taken then caches 0x0
+     * for the life of the media, although libVLC's own track info fills in a
+     * moment later. Every HLS and TS source - most anime and live channels -
+     * reached Dart with no shape at all, so the host could not turn the device
+     * to match it.
+     *
+     * So an unsized track drops the cached copy and asks again, on each
+     * snapshot until libVLC has an answer. A sized track, or no video track at
+     * all, costs nothing extra.
+     */
+    private fun sizedVideoTrack(): IMedia.VideoTrack? {
+        val cached = mediaPlayer.currentVideoTrack ?: return null
+        if (cached.width > 0 && cached.height > 0) {
+            return cached
+        }
+        if (!dropCachedTracks()) {
+            return null
+        }
+        return mediaPlayer.currentVideoTrack?.takeIf { it.width > 0 && it.height > 0 }
+    }
+
+    /**
+     * Clears libvlc-android's cached track array, so the next read goes back
+     * to libVLC. Returns whether it could.
+     *
+     * Reflection, because libvlc-android 3.x offers no public way to do this:
+     * the field is private and the only code that clears it is
+     * `Media.postParse`. Locked on the media exactly as `Media.getTracks`
+     * locks, and guarded, so a libvlc build without the field falls back to
+     * the old behaviour rather than failing the snapshot.
+     */
+    private fun dropCachedTracks(): Boolean {
+        val field = nativeTracksField ?: return false
+        // getMedia() retains the media, so every call is paired with a release.
+        val media = mediaPlayer.media ?: return false
+        return try {
+            synchronized(media) { field.set(media, null) }
+            true
+        } catch (e: Exception) {
+            false
+        } finally {
+            media.release()
+        }
     }
 
     private inner class StreamHandler : EventChannel.StreamHandler {
@@ -1047,6 +1246,33 @@ internal class VlcPlayerPlatformView(
     }
 
     private companion object {
+        /**
+         * Where libVLC players are stopped and released: never the main
+         * thread, see [replacePlayer]. A thread per job rather than a single
+         * worker, so one teardown stuck behind a stalled read does not hold
+         * up every one after it.
+         */
+        val releaser: ExecutorService = Executors.newCachedThreadPool { job ->
+            Thread(job, "vlc-release").apply { isDaemon = true }
+        }
+
+        /**
+         * `Media.mNativeTracks`, libvlc-android's cached track array, or null
+         * where this libvlc build has no such field. See [dropCachedTracks].
+         *
+         * A minified host already has to keep `org.videolan.**` whole, because
+         * libvlcjni resolves those classes by name, so R8 leaves this alone.
+         */
+        val nativeTracksField: Field? by lazy {
+            try {
+                Media::class.java.getDeclaredField("mNativeTracks").apply {
+                    isAccessible = true
+                }
+            } catch (e: Exception) {
+                null
+            }
+        }
+
         const val STATE_IDLE = "idle"
         const val STATE_OPENING = "opening"
         const val STATE_BUFFERING = "buffering"
@@ -1067,14 +1293,13 @@ internal class VlcPlayerPlatformView(
         const val ERROR_PLAYBACK = "playback_error"
         const val ERROR_SET_SOURCE_FAILED = "set_source_failed"
 
-        fun scaleTypeFor(fit: String): ScaleType {
-            return when (fit) {
-                "cover" -> ScaleType.SURFACE_FIT_SCREEN
-                "fill" -> ScaleType.SURFACE_FILL
-                "none" -> ScaleType.SURFACE_ORIGINAL
-                else -> ScaleType.SURFACE_BEST_FIT
-            }
-        }
+        /// Always a plain fit: every fit reaches libVLC as a crop or an aspect
+        /// ratio through [setVideoGeometry], so the picture the view is handed
+        /// is already the shape to show. Scaling the view as well would apply
+        /// the fit twice - and a view larger than the screen is what took the
+        /// subtitles off its edge.
+        @Suppress("UNUSED_PARAMETER")
+        fun scaleTypeFor(fit: String): ScaleType = ScaleType.SURFACE_BEST_FIT
 
         fun activityFrom(context: Context): Activity? {
             var current = context

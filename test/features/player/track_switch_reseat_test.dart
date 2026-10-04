@@ -38,6 +38,7 @@ void main() {
             tracks: tracks,
             trackInfo: const <VlcMediaTrackInfo>[],
             onTracksChanged: () {},
+            onOpenPage: (_) {},
           ),
         ),
       ),

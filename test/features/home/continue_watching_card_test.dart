@@ -130,6 +130,14 @@ void main() {
     testWidgets('D-pad focus lifts the wash and adds no second focus stop', (
       tester,
     ) async {
+      // A remote is driving: focus is drawn only then - see
+      // `shared/focus/app_focus.dart`.
+      FocusManager.instance.highlightStrategy =
+          FocusHighlightStrategy.alwaysTraditional;
+      addTearDown(() {
+        FocusManager.instance.highlightStrategy =
+            FocusHighlightStrategy.automatic;
+      });
       await _pumpCard(tester, card: _tvCard, screen: _tvScreen);
 
       final Finder focusInsideCard = find.descendant(
@@ -161,6 +169,28 @@ void main() {
 
       node.unfocus();
       await tester.pumpAndSettle();
+      expect(_washAlpha(tester), closeTo(0.20, 0.001));
+    });
+
+    testWidgets('focus under a thumb leaves the wash where it was', (
+      tester,
+    ) async {
+      // The rail autofocuses a card for the remote whatever the input, and
+      // a phone nobody had touched showed that card lifted.
+      await _pumpCard(tester, card: _tvCard, screen: _tvScreen);
+      final FocusNode node = tester
+          .widget<Focus>(
+            find.descendant(
+              of: find.byType(CardsWrapper),
+              matching: find.byType(Focus),
+            ),
+          )
+          .focusNode!;
+
+      node.requestFocus();
+      await tester.pumpAndSettle();
+
+      expect(node.hasFocus, isTrue);
       expect(_washAlpha(tester), closeTo(0.20, 0.001));
     });
   });

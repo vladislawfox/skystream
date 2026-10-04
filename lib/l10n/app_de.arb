@@ -284,6 +284,8 @@
   "liveStreams": "Live-Streams",
   "debug": "DEBUG",
   "extensionsUpdated": "{count, plural, =1{1 Erweiterung aktualisiert} other{{count} Erweiterungen aktualisiert}}",
+  "extensionsNewRepositories": "{count, plural, =1{Neues Repository in {source}} other{{count} neue Repositories in {source}}}",
+  "extensionsNewPlugins": "{count, plural, =1{Neues Plugin in {repository}} other{{count} neue Plugins in {repository}}}",
   "invalidNavigation": "Ungültige Navigation. Bitte zurückgehen.",
   "startOver": "Neustart",
   "goBack": "Zurück",

@@ -242,8 +242,15 @@ class _NextEpisodeCountdownState extends State<NextEpisodeCountdown>
   @override
   void initState() {
     super.initState();
-    _clock = AnimationController(vsync: this, duration: widget.countdown)
-      ..addStatusListener(_onClockStatus);
+    // Preserved: this is the countdown itself, not an animation of it. On the
+    // default behaviour Flutter runs a controller at 5% of its duration while
+    // the platform asks for animations to be removed, and the next episode
+    // started under a second after the card came up.
+    _clock = AnimationController(
+      vsync: this,
+      duration: widget.countdown,
+      animationBehavior: AnimationBehavior.preserve,
+    )..addStatusListener(_onClockStatus);
     if (!widget.paused) _clock.forward();
     // Safe to schedule before the route is looked up: didChangeDependencies
     // and the first build both run before a post-frame callback does.

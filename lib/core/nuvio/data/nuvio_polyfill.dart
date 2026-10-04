@@ -105,7 +105,9 @@ const String nuvioPolyfillSource = r'''
     var entry = G.__nuvio_pending[id];
     if (!entry) return;
     delete G.__nuvio_pending[id];
-    if (error) { entry.reject(new Error(error)); return; }
+    // Nuvio's fetch never rejects: a request that cannot be made resolves as
+    // `{ok: false, status: 0}`, and scrapers written for it test `ok`.
+    if (error) { (entry.fail || entry.reject)(error); return; }
     entry.resolve(payload);
   };
 
@@ -541,7 +543,16 @@ const String nuvioPolyfillSource = r'''
       Object.keys(init).forEach(function (k) { self._pairs.push([k, String(init[k])]); });
     }
   }
-  NuvioSearchParams.prototype.append = function (k, v) { this._pairs.push([String(k), String(v)]); };
+  // The searchParams of a URL write their changes back into its query.
+  NuvioSearchParams.prototype._update = function () {
+    if (!this._url) return;
+    var q = this.toString();
+    this._url._query = q === '' ? null : q;
+  };
+  NuvioSearchParams.prototype.append = function (k, v) {
+    this._pairs.push([String(k), String(v)]);
+    this._update();
+  };
   NuvioSearchParams.prototype.set = function (k, v) {
     var done = false;
     this._pairs = this._pairs.filter(function (p) {
@@ -550,6 +561,7 @@ const String nuvioPolyfillSource = r'''
       done = true; p[1] = String(v); return true;
     });
     if (!done) this._pairs.push([String(k), String(v)]);
+    this._update();
   };
   NuvioSearchParams.prototype.get = function (k) {
     for (var i = 0; i < this._pairs.length; i++) if (this._pairs[i][0] === String(k)) return this._pairs[i][1];
@@ -561,6 +573,7 @@ const String nuvioPolyfillSource = r'''
   NuvioSearchParams.prototype.has = function (k) { return this.get(k) !== null; };
   NuvioSearchParams.prototype['delete'] = function (k) {
     this._pairs = this._pairs.filter(function (p) { return p[0] !== String(k); });
+    this._update();
   };
   NuvioSearchParams.prototype.forEach = function (fn) {
     var self = this;
@@ -569,7 +582,13 @@ const String nuvioPolyfillSource = r'''
   NuvioSearchParams.prototype.keys = function () { return this._pairs.map(function (p) { return p[0]; }); };
   NuvioSearchParams.prototype.values = function () { return this._pairs.map(function (p) { return p[1]; }); };
   NuvioSearchParams.prototype.entries = function () { return this._pairs.map(function (p) { return [p[0], p[1]]; }); };
-  NuvioSearchParams.prototype.sort = function () { this._pairs.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); }); };
+  NuvioSearchParams.prototype[Symbol.iterator] = function () {
+    return this.entries()[Symbol.iterator]();
+  };
+  NuvioSearchParams.prototype.sort = function () {
+    this._pairs.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
+    this._update();
+  };
   NuvioSearchParams.prototype.toString = function () {
     return this._pairs.map(function (p) {
       return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]);
@@ -577,53 +596,142 @@ const String nuvioPolyfillSource = r'''
   };
   G.URLSearchParams = NuvioSearchParams;
 
-  function NuvioURL(input, base) {
-    var url = String(input == null ? '' : input);
-    if (base && !/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(url)) {
-      var b = String(typeof base === 'string' ? base : base.href);
-      var origin = (b.match(/^([a-zA-Z][a-zA-Z0-9+\-.]*:\/\/[^\/?#]+)/) || [])[1] || '';
-      if (url.indexOf('//') === 0) {
-        url = (b.split(':')[0]) + ':' + url;
-      } else if (url.charAt(0) === '/') {
-        url = origin + url;
-      } else if (url.charAt(0) === '?') {
-        url = b.split('?')[0] + url;
-      } else if (url.charAt(0) === '#') {
-        url = b.split('#')[0] + url;
+  // Scrapers rewrite addresses in place - `url.hostname = mirror`, then
+  // `fetch(url.toString())` - so, as in the URL standard, every part is an
+  // accessor over one parsed record: a change to any part shows in href, and a
+  // query that is only read keeps the exact text it was written with.
+  var DEFAULT_PORTS = { 'http:': '80', 'https:': '443', 'ws:': '80', 'wss:': '443', 'ftp:': '21' };
+  function isSpecial(protocol) {
+    return DEFAULT_PORTS.hasOwnProperty(protocol) || protocol === 'file:';
+  }
+  function removeDotSegments(path) {
+    var input = (path.charAt(0) === '/' ? path : '/' + path).split('/').slice(1);
+    var out = [];
+    for (var i = 0; i < input.length; i++) {
+      var seg = input[i].toLowerCase();
+      var last = i === input.length - 1;
+      if (seg === '..' || seg === '.%2e' || seg === '%2e.' || seg === '%2e%2e') {
+        out.pop();
+        if (last) out.push('');
+      } else if (seg === '.' || seg === '%2e') {
+        if (last) out.push('');
       } else {
-        var path = b.split('#')[0].split('?')[0];
-        url = path.replace(/\/[^\/]*$/, '/') + url;
+        out.push(input[i]);
       }
     }
-    var m = /^([a-zA-Z][a-zA-Z0-9+\-.]*:)\/\/([^\/?#]*)([^?#]*)(\?[^#]*)?(#.*)?$/.exec(url);
-    if (!m) throw new TypeError('Invalid URL: ' + url);
+    return '/' + out.join('/');
+  }
+  function setUrlHostname(url, host) {
+    url._hostname = isSpecial(url._protocol) ? host.toLowerCase() : host;
+  }
+  function setUrlPort(url, value) {
+    value = String(value);
+    if (value === '') { url._port = ''; return; }
+    var digits = /^\d+/.exec(value);
+    if (!digits || Number(digits[0]) > 65535) return;
+    var port = String(Number(digits[0]));
+    url._port = port === DEFAULT_PORTS[url._protocol] ? '' : port;
+  }
+  function urlAuthority(url) {
+    var userinfo = url._username || url._password
+      ? url._username + (url._password ? ':' + url._password : '') + '@'
+      : '';
+    return userinfo + url._hostname + (url._port ? ':' + url._port : '');
+  }
+  function parseUrlInto(url, input) {
+    var m = /^([a-zA-Z][a-zA-Z0-9+\-.]*:)\/\/([^\/?#]*)([^?#]*)(\?[^#]*)?(#.*)?$/.exec(input);
+    if (!m) throw new TypeError('Invalid URL: ' + input);
     var authority = m[2], userinfo = '', hostport = authority;
     var at = authority.lastIndexOf('@');
     if (at >= 0) { userinfo = authority.substring(0, at); hostport = authority.substring(at + 1); }
-    var host = hostport, port = '';
-    var portMatch = /^(\[[^\]]*\]|[^:]*)(?::(\d+))?$/.exec(hostport);
-    if (portMatch) { host = portMatch[1]; port = portMatch[2] || ''; }
-    this.protocol = m[1];
-    this.username = userinfo.split(':')[0] || '';
-    this.password = userinfo.indexOf(':') >= 0 ? userinfo.split(':')[1] : '';
-    this.hostname = host;
-    this.port = port;
-    this.host = port ? host + ':' + port : host;
-    this.pathname = m[3] || '/';
-    this.search = m[4] || '';
-    this.hash = m[5] || '';
-    this.origin = this.protocol + '//' + this.host;
-    this.searchParams = new NuvioSearchParams(this.search);
-    var self = this;
-    Object.defineProperty(this, 'href', {
-      enumerable: true,
-      get: function () {
-        var q = self.searchParams.toString();
-        return self.origin + self.pathname + (q ? '?' + q : '') + self.hash;
-      },
-      set: function (v) { NuvioURL.call(self, v); }
+    var colon = userinfo.indexOf(':');
+    url._protocol = m[1].toLowerCase();
+    url._username = colon >= 0 ? userinfo.substring(0, colon) : userinfo;
+    url._password = colon >= 0 ? userinfo.substring(colon + 1) : '';
+    var hostMatch = /^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/.exec(hostport);
+    setUrlHostname(url, hostMatch ? hostMatch[1] : hostport);
+    url._port = '';
+    if (hostMatch && hostMatch[2]) setUrlPort(url, hostMatch[2]);
+    url._pathname = removeDotSegments(m[3]);
+    url._query = m[4] === undefined ? null : m[4].substring(1);
+    url._fragment = m[5] === undefined ? null : m[5].substring(1);
+  }
+  function NuvioURL(input, base) {
+    var url = String(input == null ? '' : input)
+      .replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '')
+      .replace(/[\t\n\r]/g, '');
+    if (base && !/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(url)) {
+      var b = new NuvioURL(typeof base === 'object' && base.href !== undefined ? base.href : String(base));
+      var root = b._protocol + '//' + urlAuthority(b);
+      if (url === '' || url.charAt(0) === '#') {
+        url = b.href.split('#')[0] + url;
+      } else if (url.indexOf('//') === 0) {
+        url = b._protocol + url;
+      } else if (url.charAt(0) === '/') {
+        url = root + url;
+      } else if (url.charAt(0) === '?') {
+        url = root + b._pathname + url;
+      } else {
+        url = root + b._pathname.replace(/[^\/]*$/, '') + url;
+      }
+    }
+    parseUrlInto(this, url);
+    this._searchParams = new NuvioSearchParams(this._query || '');
+    this._searchParams._url = this;
+  }
+  function urlAccessor(name, get, set) {
+    Object.defineProperty(NuvioURL.prototype, name, {
+      get: get, set: set, enumerable: true, configurable: true
     });
   }
+  urlAccessor('href', function () {
+    return this._protocol + '//' + urlAuthority(this) + this._pathname +
+      (this._query !== null ? '?' + this._query : '') +
+      (this._fragment !== null ? '#' + this._fragment : '');
+  }, function (v) {
+    parseUrlInto(this, String(v));
+    this._searchParams._pairs = new NuvioSearchParams(this._query || '')._pairs;
+  });
+  urlAccessor('origin', function () { return this._protocol + '//' + this.host; });
+  urlAccessor('protocol', function () { return this._protocol; }, function (v) {
+    var m = /^([a-zA-Z][a-zA-Z0-9+\-.]*)/.exec(String(v));
+    if (!m) return;
+    this._protocol = m[1].toLowerCase() + ':';
+    if (this._port === DEFAULT_PORTS[this._protocol]) this._port = '';
+  });
+  urlAccessor('username', function () { return this._username; }, function (v) { this._username = String(v); });
+  urlAccessor('password', function () { return this._password; }, function (v) { this._password = String(v); });
+  urlAccessor('host', function () {
+    return this._hostname + (this._port ? ':' + this._port : '');
+  }, function (v) {
+    var m = /^(\[[^\]]*\]|[^:\/?#]*)(?::(\d*))?/.exec(String(v));
+    if (m[1] === '') return;
+    setUrlHostname(this, m[1]);
+    if (m[2]) setUrlPort(this, m[2]);
+  });
+  urlAccessor('hostname', function () { return this._hostname; }, function (v) {
+    var host = /^(\[[^\]]*\]|[^:\/?#]*)/.exec(String(v))[1];
+    if (host !== '') setUrlHostname(this, host);
+  });
+  urlAccessor('port', function () { return this._port; }, function (v) { setUrlPort(this, v); });
+  urlAccessor('pathname', function () { return this._pathname; }, function (v) {
+    this._pathname = removeDotSegments(String(v));
+  });
+  urlAccessor('search', function () { return this._query ? '?' + this._query : ''; }, function (v) {
+    v = String(v);
+    if (v === '') {
+      this._query = null;
+      this._searchParams._pairs = [];
+      return;
+    }
+    this._query = v.charAt(0) === '?' ? v.substring(1) : v;
+    this._searchParams._pairs = new NuvioSearchParams(this._query)._pairs;
+  });
+  urlAccessor('hash', function () { return this._fragment ? '#' + this._fragment : ''; }, function (v) {
+    v = String(v);
+    this._fragment = v === '' ? null : (v.charAt(0) === '#' ? v.substring(1) : v);
+  });
+  urlAccessor('searchParams', function () { return this._searchParams; });
   NuvioURL.prototype.toString = function () { return this.href; };
   NuvioURL.prototype.toJSON = function () { return this.href; };
   G.URL = G.URL || NuvioURL;
@@ -707,6 +815,15 @@ const String nuvioPolyfillSource = r'''
     var self = this;
     return Object.keys(this._map).map(function (k) { return [k, self._map[k]]; });
   };
+  NuvioHeaders.prototype.values = function () {
+    var self = this;
+    return Object.keys(this._map).map(function (k) { return self._map[k]; });
+  };
+  // Iterable as the Fetch standard's Headers is: DVDPlay and MalluMV copy
+  // them with `Object.fromEntries(response.headers)`.
+  NuvioHeaders.prototype[Symbol.iterator] = function () {
+    return this.entries()[Symbol.iterator]();
+  };
   NuvioHeaders.prototype.raw = function () {
     var out = {}, self = this;
     Object.keys(this._map).forEach(function (k) { out[k] = [self._map[k]]; });
@@ -730,7 +847,9 @@ const String nuvioPolyfillSource = r'''
     var body = this._body;
     this.bodyUsed = true;
     return new Promise(function (resolve, reject) {
-      try { resolve(body === '' ? null : JSON.parse(body)); } catch (e) { reject(new Error('Invalid JSON response')); }
+      // As Nuvio's: null for a body that is not JSON - a Cloudflare or error
+      // page - rather than a rejection scrapers were never written to catch.
+      try { resolve(body === '' ? null : JSON.parse(body)); } catch (e) { resolve(null); }
     });
   };
   NuvioResponse.prototype.arrayBuffer = function () {
@@ -812,6 +931,15 @@ const String nuvioPolyfillSource = r'''
           settled = true;
           resolve(new NuvioResponse(payload));
         },
+        fail: function (message) {
+          if (settled) return;
+          settled = true;
+          var failed = new NuvioResponse({
+            ok: false, status: 0, statusText: String(message), url: url
+          });
+          failed._networkError = String(message);
+          resolve(failed);
+        },
         reject: function (err) {
           if (settled) return;
           settled = true;
@@ -859,6 +987,7 @@ const String nuvioPolyfillSource = r'''
     var self = this;
     doFetch(this._url, { method: this._method, headers: this._headers, body: body }).then(function (res) {
       if (self._aborted) return;
+      if (res._networkError) throw new Error(res._networkError);
       return res.text().then(function (text) {
         self.status = res.status;
         self.statusText = res.statusText;
@@ -952,13 +1081,41 @@ const String nuvioPolyfillSource = r'''
 
   // ---------------------------------------------------------------- cheerio
   function domCall(channel, payload) { return bridge(channel, payload); }
+  // What cheerio hands out for an element - from get(), toArray(), [i], and
+  // to each/map/filter callbacks - is a domhandler node, and scrapers read it:
+  // HDHub4u walks an episode's links until `.get(0).tagName === 'hr'`. Looked
+  // up only when read, so a handle nobody inspects costs nothing.
+  function nodeHandle(docId, id) {
+    var handle = { __nuvioNode: id, __nuvioDoc: docId };
+    var tag = null, attrs = null;
+    function tagName() {
+      if (tag === null) {
+        var tags = JSON.parse(domCall('nuvio_dom_tag', { doc: docId, nodes: [id] }));
+        tag = tags.length ? String(tags[0]) : '';
+      }
+      return tag;
+    }
+    Object.defineProperty(handle, 'tagName', { get: tagName });
+    Object.defineProperty(handle, 'name', { get: tagName });
+    Object.defineProperty(handle, 'type', { get: function () { return 'tag'; } });
+    Object.defineProperty(handle, 'attribs', {
+      get: function () {
+        if (attrs === null) {
+          var d = JSON.parse(domCall('nuvio_dom_describe', { doc: docId, nodes: [id] }));
+          attrs = d.length ? (d[0].attrs || {}) : {};
+        }
+        return attrs;
+      }
+    });
+    return handle;
+  }
   function Selection(docId, nodeIds) {
     this._doc = docId;
     this._nodes = nodeIds || [];
     this.length = this._nodes.length;
     this.cheerio = '[cheerio object]';
     for (var i = 0; i < this._nodes.length; i++) {
-      this[i] = { __nuvioNode: this._nodes[i], __nuvioDoc: docId };
+      this[i] = nodeHandle(docId, this._nodes[i]);
     }
   }
   function idsOf(input, docId) {
@@ -981,11 +1138,11 @@ const String nuvioPolyfillSource = r'''
   Selection.prototype.get = function (index) {
     var self = this;
     if (index === undefined) {
-      return this._nodes.map(function (id) { return { __nuvioNode: id, __nuvioDoc: self._doc }; });
+      return this._nodes.map(function (id) { return nodeHandle(self._doc, id); });
     }
     if (index < 0) index += this._nodes.length;
     var id = this._nodes[index];
-    return id === undefined ? undefined : { __nuvioNode: id, __nuvioDoc: this._doc };
+    return id === undefined ? undefined : nodeHandle(this._doc, id);
   };
   Selection.prototype.toArray = function () { return this.get(); };
   Selection.prototype.eq = function (i) {
@@ -997,7 +1154,7 @@ const String nuvioPolyfillSource = r'''
   Selection.prototype.last = function () { return this.eq(this._nodes.length - 1); };
   Selection.prototype.each = function (fn) {
     for (var i = 0; i < this._nodes.length; i++) {
-      var el = { __nuvioNode: this._nodes[i], __nuvioDoc: this._doc };
+      var el = nodeHandle(this._doc, this._nodes[i]);
       if (fn.call(el, i, el) === false) break;
     }
     return this;
@@ -1005,7 +1162,7 @@ const String nuvioPolyfillSource = r'''
   Selection.prototype.map = function (fn) {
     var out = [];
     for (var i = 0; i < this._nodes.length; i++) {
-      var el = { __nuvioNode: this._nodes[i], __nuvioDoc: this._doc };
+      var el = nodeHandle(this._doc, this._nodes[i]);
       var r = fn.call(el, i, el);
       if (r !== undefined && r !== null) out.push(r);
     }
@@ -1019,7 +1176,7 @@ const String nuvioPolyfillSource = r'''
     if (typeof test === 'function') {
       var keep = [];
       for (var i = 0; i < this._nodes.length; i++) {
-        var el = { __nuvioNode: this._nodes[i], __nuvioDoc: this._doc };
+        var el = nodeHandle(this._doc, this._nodes[i]);
         if (test.call(el, i, el)) keep.push(this._nodes[i]);
       }
       return new Selection(this._doc, keep);

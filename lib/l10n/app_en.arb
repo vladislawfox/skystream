@@ -2,6 +2,24 @@
   "@@locale": "en",
   "appTitle": "SkyStream",
   "languageName": "English",
+  "addonHealthChecking": "Checking add-on…",
+  "@addonHealthChecking": {
+    "description": "Manage tab, Stremio add-ons: the liveness probe for an installed add-on is still running."
+  },
+  "addonHealthWorking": "Working · {ms} ms",
+  "@addonHealthWorking": {
+    "description": "Manage tab, Stremio add-ons: the add-on answered its manifest ping. {ms} is the round-trip latency in milliseconds.",
+    "placeholders": {
+      "ms": {
+        "type": "int",
+        "example": "340"
+      }
+    }
+  },
+  "addonHealthUnavailable": "Unavailable",
+  "@addonHealthUnavailable": {
+    "description": "Manage tab, Stremio add-ons: the add-on did not answer its manifest ping (offline, moved, or wrong URL)."
+  },
   "home": "Home",
   "search": "Search",
   "explore": "Explore",
@@ -309,7 +327,7 @@
       }
     }
   },
-  "removeRepoWarning": "This will remove the repository and uninstall ALL its plugin.",
+  "removeRepoWarning": "This will remove the repository and uninstall ALL its plugins.",
   "addRepository": "Add Repository",
   "repoUrlOrShortcode": "Repository URL or Shortcode",
   "assetPlugin": "Asset Plugin",
@@ -328,6 +346,10 @@
     }
   },
   "install": "Install",
+  "discoverSearchHint": "Search community add-ons",
+  "discoverClearSearch": "Clear",
+  "discoverNeedsWebSetup": "Needs quick setup on the add-on's website",
+  "discoverOpenSetup": "Set up on the add-on website",
   "error": "Error",
   "ok": "OK",
   "pluginSettings": "{pluginName} Settings",
@@ -344,6 +366,30 @@
   "liveStreams": "Live Streams",
   "debug": "DEBUG",
   "extensionsUpdated": "{count, plural, =1{Updated 1 extension} other{Updated {count} extensions}}",
+  "extensionsNewRepositories": "{count, plural, =1{New repository in {source}} other{{count} new repositories in {source}}}",
+  "@extensionsNewRepositories": {
+    "description": "Title of a toast shown after launch: a repository collection the user follows (a repository that lists other repositories, like the one the 'universe' shortcode adds) listed repositories it had not listed before, and the app added them. {source} is the collection's name, or a few names separated by commas; names are proper nouns and never translated. The toast's body lists the new repositories' names.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "source": {
+        "type": "String"
+      }
+    }
+  },
+  "extensionsNewPlugins": "{count, plural, =1{New plugin in {repository}} other{{count} new plugins in {repository}}}",
+  "@extensionsNewPlugins": {
+    "description": "Title of a toast shown after launch: a repository the user has added lists plugins it did not list before. They are available to install, not installed. {repository} is the repository's name, or a few names separated by commas; names are proper nouns and never translated. The toast's body lists the new plugins' names.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "repository": {
+        "type": "String"
+      }
+    }
+  },
   "invalidNavigation": "Invalid navigation. Please go back.",
   "startOver": "Start Over",
   "goBack": "Go Back",
@@ -1156,6 +1202,14 @@
   "@playerSourceUnplayable": {
     "description": "Status on a row of the source list for a link that was opened and would not play, or stopped playing. It may still be reachable - the reachability column says so separately."
   },
+  "playerSourceCannotSeek": "Can't seek",
+  "@playerSourceCannotSeek": {
+    "description": "Reachability column of the source list, beside 'Reachable', for a link whose server answered but ignores byte ranges: it plays, but only from its start, so the viewer cannot jump ahead and a resume starts over. Keep it as short as 'Reachable'."
+  },
+  "playerSourceNotVideo": "Not a video",
+  "@playerSourceNotVideo": {
+    "description": "Reachability column of the source list, for a link that answered with a web page - a link generator, a login or a missing-file page - rather than anything that plays. Keep it as short as 'Reachable'."
+  },
   "nuvioPlugins": "Nuvio plugins",
   "@nuvioPlugins": {
     "description": "Title of the Nuvio source card on a TMDB details screen. Sits beside the 'Available sources' card, which is the SkyStream plugin system; the two are peers. 'Nuvio' is the name of the third-party scraper project and is never translated."
@@ -1197,5 +1251,36 @@
     "placeholders": {
       "count": { "type": "int" }
     }
+  },
+"addonSourcesSearchTooltip": "Search links",
+  "@addonSourcesSearchTooltip": {
+    "description": "Stremio sources sheet header: opens the free-text filter over add-on and provider names."
+  },
+  "addonSourcesCloseSearchTooltip": "Close search",
+  "@addonSourcesCloseSearchTooltip": {
+    "description": "Stremio sources sheet header: hides the search field and clears the query."
+  },
+  "addonSourcesSearchHint": "Add-on, provider, quality…",
+  "@addonSourcesSearchHint": {
+    "description": "Stremio sources sheet search field placeholder. Users type an add-on name (Torrentio), an inner provider (VegaMovies), or a quality token."
+  },
+  "addonSourcesNoMatchFilter": "No links match. Clear search or try \"All\".",
+  "@addonSourcesNoMatchFilter": {
+    "description": "Stremio sources sheet empty state when HD/kind chips or the text search hide every link."
+  },
+  "addonManageSearchHint": "Search installed add-ons…",
+  "@addonManageSearchHint": {
+    "description": "Installed add-ons list on the Manage tab: placeholder for filtering by name, id, or resource."
+  },
+  "addonManageNoMatch": "No installed add-on matches \"{query}\".",
+  "@addonManageNoMatch": {
+    "description": "Installed add-ons list empty state when the search box filters everything out.",
+    "placeholders": {
+      "query": {
+        "type": "String",
+        "example": "torrentio"
+      }
+    }
   }
 }
+

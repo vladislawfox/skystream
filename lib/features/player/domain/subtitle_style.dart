@@ -1,10 +1,13 @@
 /// Translating the app's subtitle preferences into libVLC's own scale.
 ///
-/// Subtitles are rendered by the engine, not by Flutter, so these settings only
-/// take effect if they are handed to libVLC when the player is created.
-/// Otherwise VLC applies its own default of `--freetype-rel-fontsize=16`,
-/// which is very large on a full-screen video.
+/// Two renderers read these. libVLC draws the tracks inside a video, and only
+/// takes these settings when the player is created - otherwise it applies its
+/// own default of `--freetype-rel-fontsize=16`, which is very large on a
+/// full-screen video. SkyStream draws subtitle files itself, from the same
+/// numbers, so a file and an embedded track look alike.
 library;
+
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:vlc_player/vlc_player.dart';
@@ -45,3 +48,17 @@ VlcSubtitleStyle subtitleStyleFrom(PlayerSettings settings) {
     outlineThickness: 2,
   );
 }
+
+/// Height of the video frame subtitles are scaled against.
+///
+/// Playback is landscape, so the frame is as tall as the *short* edge of the
+/// window no matter which way it is held. On a television the window is
+/// already landscape and this is simply its height.
+double subtitleFrameHeight(Size window) =>
+    math.min(window.width, window.height);
+
+/// The font size [style] is drawn at in a player [area] big: libVLC's rule -
+/// the frame height over the relative size - which SkyStream's own subtitles
+/// follow too.
+double subtitleFontSize(VlcSubtitleStyle style, Size area) =>
+    subtitleFrameHeight(area) / (style.relativeFontSize ?? 16);

@@ -8,6 +8,7 @@ import '../../../../core/utils/image_fallbacks.dart';
 import '../../../sources/presentation/plugin_sources_sheet.dart';
 import '../../../sources/presentation/source_sheet_widgets.dart';
 import '../tmdb_details_controller.dart';
+import '../../../../shared/focus/app_focus.dart';
 
 /// Season / episode picker for "Search in Nuvio plugins" on a series.
 ///
@@ -260,7 +261,7 @@ class _EpisodeItemCardState extends State<_EpisodeItemCard> {
           onSelect: widget.onSelect,
           child: const SizedBox.shrink(),
           builder: (context, dpadState, _) {
-            final isFocused = dpadState.focused;
+            final isFocused = showFocusIndicator(context, dpadState.focused);
             return GlassRow(
               focused: isFocused,
               onTap: widget.onSelect,

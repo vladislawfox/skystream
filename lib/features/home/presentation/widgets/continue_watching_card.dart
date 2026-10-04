@@ -22,6 +22,8 @@ import '../../../../shared/widgets/loading_dialog.dart';
 import 'package:skystream/l10n/generated/app_localizations.dart';
 import 'package:skystream/core/services/notification_service.dart';
 
+import '../../../../shared/focus/app_focus.dart';
+
 class ContinueWatchingCard extends ConsumerStatefulWidget {
   final HistoryItem historyItem;
   final double width;
@@ -84,13 +86,15 @@ class _ContinueWatchingCardState extends ConsumerState<ContinueWatchingCard> {
   bool _isHovered = false;
   bool _isFocused = false;
 
-  /// True when the card is the one the viewer is aimed at, by either input.
+  /// True when the card is the one the viewer is aimed at: under a mouse, or
+  /// focused from a remote or a keyboard.
   ///
-  /// Not gated on [FocusHighlightMode]: the reveal is the same affordance on a
-  /// remote, a mouse and a keyboard, and reading the highlight mode during
-  /// build without listening to it is how a card ends up stuck in the wrong
-  /// state when the input changes under it.
-  bool get _isAttended => _isHovered || _isFocused;
+  /// Focus reached under a thumb is not aiming - a card autofocused for the
+  /// remote would sit revealed on a phone nobody had touched - so focus goes
+  /// through [showFocusIndicator], which listens for the input changing, and
+  /// the card cannot get stuck in the wrong state when it does. Build-time
+  /// only, for that reason.
+  bool get _isAttended => _isHovered || showFocusIndicator(context, _isFocused);
 
   static String _normalizeMatchKey(String value) {
     return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');

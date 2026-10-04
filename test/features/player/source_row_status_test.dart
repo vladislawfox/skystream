@@ -28,6 +28,13 @@ void main() {
       expect(reach(ProbeOutcome.unhealthy), SourceReachability.unreachable);
     });
 
+    // Both answered, so neither is "reachable" and nothing more: one plays only
+    // from its start, and the other is a web page rather than a video.
+    test('says when a source cannot be sought in, or is not a video', () {
+      expect(reach(ProbeOutcome.unseekable), SourceReachability.unseekable);
+      expect(reach(ProbeOutcome.notVideo), SourceReachability.notVideo);
+    });
+
     // The check answers these without looking, so "reachable" would be a claim
     // nobody made: a magnet with no seeders passes it.
     test(
@@ -70,6 +77,15 @@ void main() {
           hasPlayed: true,
         ),
         SourceReachability.reachable,
+      );
+    });
+
+    // Playing it proves it answers, not that its server will seek - which is
+    // exactly what a viewer wonders about while it plays.
+    test('still cannot be sought in when its server ignores ranges', () {
+      expect(
+        sourceReachabilityOf(http, ProbeOutcome.unseekable, hasPlayed: true),
+        SourceReachability.unseekable,
       );
     });
   });

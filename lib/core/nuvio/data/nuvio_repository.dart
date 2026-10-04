@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../models/extension_update_report.dart';
 import '../../network/dio_client_provider.dart';
 import '../models/nuvio_models.dart';
 import 'nuvio_code_store.dart';
@@ -73,9 +74,6 @@ class NuvioRepository extends _$NuvioRepository {
   static const String _codePrefix = 'nuvio_code_';
   static const String _settingsPrefix = 'nuvio_scraper_settings_';
 
-  /// How long after the last check a launch triggers a new one.
-  static const Duration autoUpdateInterval = Duration(hours: 6);
-
   /// Value matched against a scraper's `supportedPlatforms` /
   /// `disabledPlatforms`, like Nuvio's `currentPluginPlatform()`.
   static String get platformName {
@@ -94,9 +92,14 @@ class NuvioRepository extends _$NuvioRepository {
   final NuvioCodeStore _codeStore = NuvioCodeStore();
   final Map<String, Map<String, dynamic>> _settingsCache = {};
 
+  /// The stored repositories reaching [state]. [autoUpdate] waits on it, so a
+  /// launch that builds this provider and updates in the same breath does not
+  /// look at an empty list.
+  Future<void> _loaded = Future<void>.value();
+
   @override
   NuvioState build() {
-    Future.microtask(load);
+    _loaded = Future.microtask(load);
     return const NuvioState();
   }
 
@@ -124,7 +127,8 @@ class NuvioRepository extends _$NuvioRepository {
         isLoading: false,
         autoUpdate: prefs.getBool(_autoUpdateKey) ?? true,
       );
-      unawaited(autoUpdateIfDue());
+      // No update from here: the launch runs [autoUpdate] once for every
+      // extension system, and a second pass would fetch everything twice.
     } catch (error) {
       if (kDebugMode) debugPrint('[Nuvio] load failed: $error');
       state = const NuvioState(repos: [], isLoading: false);
@@ -314,24 +318,44 @@ class NuvioRepository extends _$NuvioRepository {
     } catch (_) {
       // Session-only fallback.
     }
-    if (value) unawaited(autoUpdateIfDue(force: true));
+    if (value) unawaited(autoUpdate());
   }
 
-  /// Launch-time update check, matching Nuvio's `initialize()`: every stored
+  /// Launch-time update, matching Nuvio's `initialize()`: every stored
   /// repository is re-fetched so a version the developer published upstream
-  /// lands in the app without the user doing anything.
-  Future<void> autoUpdateIfDue({bool force = false}) async {
-    if (!state.autoUpdate || state.repos.isEmpty) return;
-    final due = state.repos.where((repo) {
-      final checked = repo.lastCheckedAt;
-      return force ||
-          checked == null ||
-          DateTime.now().difference(checked) >= autoUpdateInterval;
-    }).toList();
-    if (due.isEmpty) return;
-    for (final repo in due) {
-      await refreshRepository(repo.manifestUrl, silent: true);
+  /// lands in the app without the user doing anything. Reports the scrapers
+  /// whose version moved, and - under their repository's name - the ones it
+  /// lists for the first time, leaving out any this platform cannot run.
+  ///
+  /// Every launch, on any connection. It used to wait six hours between
+  /// checks, but scrapers break when the sites they read change, and the
+  /// developer's fix only helps once it is here. The user's auto-update
+  /// switch still decides.
+  Future<ExtensionUpdateReport> autoUpdate() async {
+    await _loaded;
+    if (!state.autoUpdate || state.repos.isEmpty) {
+      return const ExtensionUpdateReport();
     }
+    final updated = <String>[];
+    final added = <String, List<String>>{};
+    for (final repo in List<NuvioRepo>.of(state.repos)) {
+      final summary = await refreshRepository(repo.manifestUrl, silent: true);
+      if (summary == null) continue;
+      updated.addAll(summary.updated.map((entry) => entry.scraper.name));
+      final runnable = [
+        for (final scraper in summary.added)
+          if (scraper.isSupportedOn(platformName)) scraper.name,
+      ];
+      if (runnable.isEmpty) continue;
+      // The name as the manifest just fetched gives it.
+      final name =
+          state.repos
+              .firstWhereOrNull((r) => r.manifestUrl == repo.manifestUrl)
+              ?.displayName ??
+          repo.displayName;
+      (added[name] ??= <String>[]).addAll(runnable);
+    }
+    return ExtensionUpdateReport(updated: updated, newPlugins: added);
   }
 
   /// Re-fetch one repository's manifest, work out what the developer changed,

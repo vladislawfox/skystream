@@ -284,6 +284,8 @@
   "liveStreams": "തത്സമയ സ്ട്രീമുകൾ",
   "debug": "ഡീബഗ്",
   "extensionsUpdated": "{count, plural, =1{1 എക്സ്റ്റൻഷൻ അപ്‌ഡേറ്റ് ചെയ്തു} other{{count} എക്സ്റ്റൻഷനുകൾ അപ്‌ഡേറ്റ് ചെയ്തു}}",
+  "extensionsNewRepositories": "{count, plural, =1{{source}-ൽ 1 പുതിയ റിപ്പോസിറ്ററി} other{{source}-ൽ {count} പുതിയ റിപ്പോസിറ്ററികൾ}}",
+  "extensionsNewPlugins": "{count, plural, =1{{repository}-ൽ 1 പുതിയ പ്ലഗിൻ} other{{repository}-ൽ {count} പുതിയ പ്ലഗിനുകൾ}}",
   "invalidNavigation": "അസാധുവായ നാവിഗേഷൻ. ദയവായി തിരികെ പോവുക.",
   "startOver": "വീണ്ടും തുടങ്ങുക",
   "goBack": "തിരികെ",

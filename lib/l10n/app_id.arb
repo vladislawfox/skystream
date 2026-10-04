@@ -287,6 +287,8 @@
   "liveStreams": "Siaran Langsung",
   "debug": "DEBUG",
   "extensionsUpdated": "{count, plural, =1{1 ekstensi diperbarui} other{{count} ekstensi diperbarui}}",
+  "extensionsNewRepositories": "{count, plural, =1{Repositori baru di {source}} other{{count} repositori baru di {source}}}",
+  "extensionsNewPlugins": "{count, plural, =1{Plugin baru di {repository}} other{{count} plugin baru di {repository}}}",
   "invalidNavigation": "Navigasi tidak valid. Silakan kembali.",
   "startOver": "Mulai Lagi",
   "goBack": "Kembali",

@@ -6,6 +6,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../utils/file_size_formatter.dart';
 import 'dio_client_provider.dart';
+import 'probe_answer.dart';
 
 part 'link_probe_service.g.dart';
 
@@ -116,32 +117,31 @@ class LinkProbeService {
         ),
       );
       final result = _fromHeaders(response.statusCode, response.headers.map);
-      if (result.reachable) return await _withHlsVariants(url, headers, result);
+      if (result.reachable) {
+        // A HEAD has no body to tell a web page by, so a type that leaves
+        // room for one is worth the start of the page.
+        if (mayBeWebPage(result.contentType)) {
+          final (_, head) = await _rangedStart(url, headers);
+          if (_isPage(url, result.contentType, head)) return _notVideo(result);
+        }
+        return await _withHlsVariants(url, headers, result);
+      }
     } catch (error) {
       if (kDebugMode) debugPrint('[LinkProbe] HEAD failed: $error');
     }
 
-    // Many CDNs reject HEAD — a 1-byte ranged GET is cheap and also proves
-    // range support.
+    // Many CDNs reject HEAD — a ranged GET is cheap and also proves range
+    // support.
     try {
-      final response = await _dio.get<List<int>>(
-        url,
-        options: Options(
-          headers: {...?headers, 'Range': 'bytes=0-1'},
-          responseType: ResponseType.bytes,
-          followRedirects: true,
-          receiveTimeout: _timeout,
-          sendTimeout: _timeout,
-          validateStatus: (status) => status != null && status < 500,
-        ),
-      );
+      final (response, head) = await _rangedStart(url, headers);
       final result = _fromHeaders(
         response.statusCode,
         response.headers.map,
         rangedGet: true,
       );
-      if (result.reachable) return await _withHlsVariants(url, headers, result);
-      return result;
+      if (!result.reachable) return result;
+      if (_isPage(url, result.contentType, head)) return _notVideo(result);
+      return await _withHlsVariants(url, headers, result);
     } catch (error) {
       return LinkProbeResult(
         reachable: false,
@@ -151,6 +151,57 @@ class LinkProbeService {
       );
     }
   }
+
+  /// A ranged GET for the start of [url], read only as far as
+  /// [kProbeSniffBytes].
+  ///
+  /// Streamed rather than buffered: a server that ignores the range answers
+  /// with the whole file, and read as bytes that was the whole file - 18 GB
+  /// on the film this was found on - held in memory.
+  Future<(Response<ResponseBody>, List<int>)> _rangedStart(
+    String url,
+    Map<String, String>? headers,
+  ) async {
+    final response = await _dio.get<ResponseBody>(
+      url,
+      options: Options(
+        headers: {...?headers, 'Range': 'bytes=0-${kProbeSniffBytes - 1}'},
+        responseType: ResponseType.stream,
+        followRedirects: true,
+        receiveTimeout: _timeout,
+        sendTimeout: _timeout,
+        validateStatus: (status) => status != null && status < 500,
+      ),
+    );
+    final head = <int>[];
+    final body = response.data?.stream;
+    if (body != null) {
+      // Leaving the loop cancels the subscription, which hangs up the rest.
+      await for (final chunk in body) {
+        final room = kProbeSniffBytes - head.length;
+        head.addAll(chunk.length > room ? chunk.sublist(0, room) : chunk);
+        if (head.length >= kProbeSniffBytes) break;
+      }
+    }
+    return (response, head);
+  }
+
+  /// Whether the start of [url]'s answer is a web page - and not a playlist
+  /// some script serves with a web page's type.
+  static bool _isPage(String url, String? contentType, List<int> head) {
+    final uri = Uri.tryParse(url);
+    if (uri != null && isPlaylist(uri, contentType, head)) return false;
+    return isWebPage(contentType, head);
+  }
+
+  /// A link that answered with a web page - HubCloud's link generator, a
+  /// login, a missing-file page served with a 200 - rather than a video.
+  static LinkProbeResult _notVideo(LinkProbeResult answered) => LinkProbeResult(
+    reachable: false,
+    statusCode: answered.statusCode,
+    contentType: answered.contentType,
+    failureReason: 'Not a video',
+  );
 
   LinkProbeResult _fromHeaders(
     int? statusCode,

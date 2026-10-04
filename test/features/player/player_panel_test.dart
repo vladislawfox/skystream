@@ -18,8 +18,8 @@ import 'package:skystream/features/player/presentation/vlc/panel/player_panel_me
 import 'package:skystream/features/player/presentation/vlc/panel/player_panel_row.dart';
 import 'package:skystream/features/player/presentation/vlc/panel/player_panel_shell.dart';
 import 'package:skystream/features/player/presentation/vlc/panel/player_sources_tab.dart';
+import 'package:skystream/features/player/presentation/vlc/panel/player_subtitle_search_page.dart';
 import 'package:skystream/features/player/presentation/vlc/torrent_file_sheet.dart';
-import 'package:skystream/features/player/presentation/vlc/vlc_subtitle_search_sheet.dart';
 import 'package:skystream/features/player/presentation/widgets/hotstar_player_style.dart';
 import 'package:skystream/features/settings/presentation/player_settings_provider.dart';
 import 'package:skystream/l10n/generated/app_localizations.dart';
@@ -522,7 +522,7 @@ void main() {
   /// of fresh media whose first snapshot lands after the panel is already up.
   /// [settle] false stops after the first frame of the route, with the track
   /// lists still loading. [overrides] wraps the host in a ProviderScope - only
-  /// the Search online sheet reads providers; the panel itself has no scope.
+  /// the Search online page reads providers; the panel itself has no scope.
   Future<
     ({
       FocusNode opener,
@@ -1814,8 +1814,8 @@ void main() {
       );
     });
 
-    testWidgets('Search online hands the sheet what the screen knows, and the '
-        'sheet searches by it on open', (tester) async {
+    testWidgets('Search online opens in the panel\'s place with what the '
+        'screen knows, and searches by it on open', (tester) async {
       final l10n = await AppLocalizations.delegate.load(const Locale('en'));
       final provider = _RecordingSubtitleProvider();
       SubtitleSearch.debugProviders = <SubtitleProvider>[provider];
@@ -1844,7 +1844,17 @@ void main() {
       await tester.tap(find.text(l10n.searchSubtitlesOnline));
       await tester.pumpAndSettle();
 
-      expect(find.byType(VlcSubtitleSearchSheet), findsOneWidget);
+      expect(find.byType(SubtitleSearchPage), findsOneWidget);
+      expect(
+        find.byType(PlayerPanelShell),
+        findsOneWidget,
+        reason: 'a step inside the drawer, not a page over the picture',
+      );
+      expect(
+        find.text(l10n.subtitles),
+        findsNothing,
+        reason: 'the tabs make way for the page until Back',
+      );
       expect(provider.calls, hasLength(1), reason: 'no press needed');
       expect(provider.calls.single, (
         query: 'The Show',

@@ -284,6 +284,8 @@
   "liveStreams": "Ζωντανές ροές",
   "debug": "Αποσφαλμάτωση",
   "extensionsUpdated": "{count, plural, =1{1 επέκταση ενημερώθηκε} other{{count} επεκτάσεις ενημερώθηκαν}}",
+  "extensionsNewRepositories": "{count, plural, =1{Νέο αποθετήριο στο {source}} other{{count} νέα αποθετήρια στο {source}}}",
+  "extensionsNewPlugins": "{count, plural, =1{Νέο πρόσθετο στο {repository}} other{{count} νέα πρόσθετα στο {repository}}}",
   "invalidNavigation": "Μη έγκυρη πλοήγηση. Παρακαλώ επιστρέψτε.",
   "startOver": "Ξεκινήστε από την αρχή",
   "goBack": "Επιστροφή",

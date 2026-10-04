@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../core/utils/layout_constants.dart';
 import '../focus/app_focus.dart';
+import '../focus/text_field_keys.dart';
 
 /// A Slider widget that handles D-pad navigation properly on TV.
 /// Left/Right D-pad adjusts the value, Up/Down D-pad navigates to other focusable elements.
@@ -196,9 +197,16 @@ class _CustomSliderState extends State<CustomSlider> {
   }
 }
 
-/// A TextField widget that allows D-pad navigation out of the text field.
-/// Up/Down D-pad navigates to other focusable elements instead of being trapped.
-/// When keyboard OK is pressed, focus automatically moves to the next element.
+/// A single-line TextField a remote can get into and out of.
+///
+/// On Android TV the leanback IME needs all four arrow keys to walk its
+/// letter grid while the keyboard is up, so none of them is taken then: the
+/// old up/down -> previous/next focus dropped focus out of the field
+/// mid-word and stranded the remote user on one letter of the keyboard.
+/// With the keyboard put away, up and down leave the field and Select brings
+/// the keyboard back - see [remoteTextFieldKeys]; before that, a dialog's
+/// field was a dead end on a television, with no way to its Save. Enter /
+/// numpad-Enter submits through [onSubmitted].
 class CustomTextField extends StatefulWidget {
   final TextEditingController? controller;
   final InputDecoration? decoration;
@@ -231,28 +239,11 @@ class _CustomTextFieldState extends State<CustomTextField> {
   @override
   void initState() {
     super.initState();
-    _focusNode = FocusNode(
-      onKeyEvent: (node, event) {
-        if (event is! KeyDownEvent) return KeyEventResult.ignored;
-
-        final key = event.logicalKey;
-
-        // Use sequential focus traversal for D-pad Up/Down instead of spatial.
-        // Spatial traversal (focusInDirection) is erratic in complex dialogs.
-        if (key == LogicalKeyboardKey.arrowUp) {
-          _focusNode.previousFocus();
-          return KeyEventResult.handled;
-        }
-
-        if (key == LogicalKeyboardKey.arrowDown) {
-          _focusNode.nextFocus();
-          return KeyEventResult.handled;
-        }
-
-        // Let left/right pass through for text cursor navigation
-        return KeyEventResult.ignored;
-      },
-    );
+    // Up and down only while the keyboard is put away, and Select to bring
+    // it back: see [remoteTextFieldKeys]. Left/right still reach the text
+    // caret through the framework's own editing shortcuts, and Enter /
+    // numpad-Enter submit through [CustomTextField.onSubmitted].
+    _focusNode = FocusNode(onKeyEvent: remoteTextFieldKeys);
   }
 
   @override

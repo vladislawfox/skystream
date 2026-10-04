@@ -3,9 +3,9 @@
 # native plugin was first compiled during a manual release build.
 #
 # WHAT GATES A MERGE, AND WHY IT IS SPLIT THIS WAY
-#   Every pull request:  analyze, test, the Riverpod Lint step (advisory - see
-#     below), the three vendored Dart packages, the Go torrent server, a debug
-#     build of Android and Linux, and the Linux integration smoke test.
+#   Every pull request:  analyze, test, the Riverpod Lint step, the three
+#     vendored Dart packages, the Go torrent server, a debug build of Android
+#     and Linux, and the Linux integration smoke test.
 #     All of that is 1x-billed ubuntu and finishes inside ~20 minutes.
 #   Pull requests that touch anything a native toolchain compiles or links
 #     (packages/**, android/**, ios/**, macos/**, windows/**, linux/**,
@@ -179,24 +179,26 @@ jobs:
         run: flutter analyze
 
       # riverpod_lint is an analysis_server_plugin, declared under the top-level
-      # `plugins:` key in analysis_options.yaml. It needs its own step because
-      # `flutter analyze` above does NOT load analyzer plugins - only
-      # `dart analyze` does. Verified by planting a deliberate
-      # avoid_public_notifier_properties violation: flutter analyze stayed
-      # silent, dart analyze reported it.
+      # `plugins:` key in analysis_options.yaml, and this is the step that
+      # reliably runs it. `flutter analyze` above loads the plugin too, but
+      # stops listening once the server's own analysis ends, so it reports
+      # whichever plugin findings happen to arrive before that - none on a warm
+      # cache, a random few on a cold one. A run failed that way on two infos
+      # the plugin had been reporting here for weeks. `dart analyze` waits for
+      # the plugin, so this is where its findings are gated, every time.
       #
       # This replaces `dart run custom_lint`, which found zero plugins
       # (riverpod_lint 3.x has no custom_lint dependency), so these rules had
       # never actually run anywhere.
-      # Advisory for now, not a gate: switching the rules on surfaced 37
-      # findings (21 in lib/, 16 in test/) that have accumulated over the years
-      # these rules were silently off, and several look like false positives
-      # worth suppressing rather than "fixing" - missing_provider_scope fires on
-      # main.dart in an app that plainly has a ProviderScope. `flutter analyze`
-      # above is still the strict gate. Drop this flag once the backlog is
-      # triaged, so the rules ratchet instead of being ignored.
+      #
+      # A gate now that the backlog is triaged. Switching the rules on surfaced
+      # 37 findings; the ones left were false positives, each suppressed at its
+      # site with the reason. A plugin's diagnostics are filtered only by an
+      # ignore that names the plugin, e.g.
+      # `// ignore: riverpod_lint/missing_provider_scope`. --fatal-infos
+      # matches `flutter analyze`, which fails on infos as well.
       - name: Riverpod Lint
-        run: dart analyze --no-fatal-warnings
+        run: dart analyze --fatal-infos
 
       # The extension-engine tests drive QuickJS over FFI, and under
       # FLUTTER_TEST the vendored fork resolves it per platform: macOS reads

@@ -284,6 +284,8 @@
   "liveStreams": "Жывыя эфіры",
   "debug": "DEBUG",
   "extensionsUpdated": "{count, plural, one{1 пашырэнне абноўлена} few{{count} пашырэнні абноўлена} many{{count} пашырэнняў абноўлена} other{{count} пашырэння абноўлена}}",
+  "extensionsNewRepositories": "{count, plural, one{{count} новы рэпазіторый у {source}} few{{count} новыя рэпазіторыі ў {source}} many{{count} новых рэпазіторыяў у {source}} other{{count} новага рэпазіторыя ў {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{{count} новы плагін у {repository}} few{{count} новыя плагіны ў {repository}} many{{count} новых плагінаў у {repository}} other{{count} новага плагіна ў {repository}}}",
   "invalidNavigation": "Памылка навігацыі. Вярніцеся назад.",
   "startOver": "Пачаць спачатку",
   "goBack": "Назад",

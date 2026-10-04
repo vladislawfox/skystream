@@ -284,6 +284,8 @@
   "liveStreams": "البث المباشر",
   "debug": "تصحيح",
   "extensionsUpdated": "{count, plural, =1{تم تحديث إضافة واحدة} other{تم تحديث {count} إضافات}}",
+  "extensionsNewRepositories": "{count, plural, one{مستودع جديد في {source}} two{مستودعان جديدان في {source}} few{{count} مستودعات جديدة في {source}} many{{count} مستودعًا جديدًا في {source}} other{{count} مستودع جديد في {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{إضافة جديدة في {repository}} two{إضافتان جديدتان في {repository}} few{{count} إضافات جديدة في {repository}} many{{count} إضافة جديدة في {repository}} other{{count} إضافة جديدة في {repository}}}",
   "invalidNavigation": "انتقال غير صالح. يرجى العودة.",
   "startOver": "البدء من جديد",
   "goBack": "العودة",

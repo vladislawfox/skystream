@@ -655,7 +655,10 @@ class _DetailsEpisodeFilterBarState
             ListenableBuilder(
               listenable: _dropdownFocusNode,
               builder: (context, _) {
-                final isFocused = _dropdownFocusNode.hasFocus;
+                final isFocused = showFocusIndicator(
+                  context,
+                  _dropdownFocusNode.hasFocus,
+                );
                 return Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   decoration: BoxDecoration(

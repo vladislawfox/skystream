@@ -16,9 +16,11 @@
 /// forever because `ActiveProvider` is still waiting for a sync that can never
 /// arrive.
 ///
-/// These tests boot the real widget tree `main()` builds - `ProviderScope` ->
-/// `ExtensionsSyncBridge` -> `MyApp` - with both gates deliberately shut, and
-/// assert the plugins arrive anyway.
+/// Those gates are gone - every launch checks for updates now - but the load
+/// must still never wait on one. These tests boot the real widget tree
+/// `main()` builds - `ProviderScope` -> `ExtensionsSyncBridge` -> `MyApp` -
+/// and assert the plugins arrive off disk before any repository is asked, and
+/// that the update check follows once the launch has settled.
 library;
 
 import 'dart:io';
@@ -229,13 +231,10 @@ void main() {
     }
   }
 
-  /// Boots the tree `main()` boots, with both update-check gates shut: the
-  /// clock says a check just happened, and the connection is metered.
+  /// Boots the tree `main()` boots, with one plugin repository added.
   Future<ProviderContainer> boot(WidgetTester tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       ExtensionsController.repoUrlsKey: <String>[_repoUrl],
-      ExtensionsController.lastAutoCheckKey:
-          DateTime.now().millisecondsSinceEpoch,
     });
 
     final ProviderContainer container = ProviderContainer(
@@ -244,7 +243,6 @@ void main() {
         pluginStorageServiceProvider.overrideWithValue(pluginStorage),
         repositoryServiceProvider.overrideWithValue(repos),
         extensionManagerProvider.overrideWith(() => manager),
-        meteredConnectionProvider.overrideWithValue(() async => true),
         downloadServiceProvider.overrideWith(_NoopDownloadService.new),
         updateControllerProvider.overrideWith(_NoopUpdateController.new),
         appRouterProvider.overrideWithValue(
@@ -288,7 +286,7 @@ void main() {
   }
 
   testWidgets(
-    'a launch loads the installed plugins even with every update gate shut',
+    'a launch loads the installed plugins first, then checks for updates',
     (WidgetTester tester) async => onHostPlatform(() async {
       // Real Hive I/O cannot complete inside `testWidgets`' fake-async zone.
       await tester.runAsync(() => storage.setActiveProviderId(_packageName));
@@ -327,19 +325,21 @@ void main() {
       );
       expect(container.read(activeProviderProvider)?.packageName, _packageName);
 
-      // And none of it cost the data plan: the gates still hold for the
-      // network side of the launch.
+      // None of that waited on a repository: the network side of the launch
+      // has not started yet.
       expect(
         repos.fetchCalls,
         isEmpty,
-        reason: 'a repository manifest was fetched over a metered connection',
+        reason: 'loading the installed plugins waited on a repository',
       );
 
+      // Once the launch has settled, the update check runs - on every launch,
+      // with nothing to hold it back.
       await settleLaunchTimers(tester);
       expect(
         repos.fetchCalls,
-        isEmpty,
-        reason: 'the delayed update check ignored the metered gate',
+        <String>[_repoUrl],
+        reason: 'the launch never checked for plugin updates',
       );
     }),
   );

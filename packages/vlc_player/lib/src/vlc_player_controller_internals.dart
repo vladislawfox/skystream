@@ -1,3 +1,5 @@
+import 'vlc_video_geometry.dart';
+
 /// Internal controller hooks used by `VlcPlayer`.
 ///
 /// This file is intentionally not exported from `package:vlc_player/vlc_player.dart`.
@@ -14,4 +16,9 @@ abstract interface class VlcPlayerControllerInternals {
   /// its replacement has attached cannot take the live player with it. Null
   /// detaches whatever is attached.
   Future<void> detach({int? viewId});
+
+  /// Tells the native player the crop and aspect ratio the widget's fit needs,
+  /// so libVLC draws subtitles inside the part of the picture that is shown;
+  /// see [VlcVideoGeometry]. Kept, and replayed on every attach.
+  void setVideoGeometry(VlcVideoGeometry geometry);
 }

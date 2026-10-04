@@ -29,9 +29,8 @@ namespace {
 /// VideoToolbox already decodes to bi-planar NV12, so asking libVLC for it
 /// deletes the swscale conversion to RGBA, moves 1.5 bytes per pixel instead
 /// of 4, and lands in the one YUV layout Flutter's Metal external texture
-/// samples directly on Darwin. Subtitles still work: libVLC 3 blends
-/// subpictures in the *source* chroma inside the vout, before the converter
-/// that produces our chroma runs.
+/// samples directly on Darwin. Subtitles are a separate matter - see
+/// kSubtitleRows.
 ///
 /// FlutterTexture.h on both iOS and macOS names the formats copyPixelBuffer
 /// may return: 32BGRA and the two NV12 variants. Swapping the three constants
@@ -40,6 +39,28 @@ namespace {
 constexpr OSType kPixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
 constexpr char kChroma[] = "NV12";
 constexpr uint32_t kPlaneCount = 2;
+
+/// Rows added below a VideoToolbox picture, so libVLC can draw subtitles on
+/// it.
+///
+/// vmem cannot draw subpictures itself, so libVLC 3 blends them into the
+/// picture - and when our buffer is no bigger than the decoder's picture it
+/// blends them EARLY, into the decoder's own format (VLC 3.0
+/// src/video_output/video_output.c, ThreadDisplayRenderPicture). A
+/// VideoToolbox picture is an opaque CVPixelBuffer that libVLC's blender
+/// cannot write, so every subtitle track inside the video vanished whenever
+/// VideoToolbox decoded it: always, on Darwin. A software-decoded picture
+/// blends fine, which is why this only applies to VideoToolbox's.
+///
+/// A buffer larger than the picture moves the blend LATE, onto the converted
+/// picture in our NV12, which it can write. The picture is scaled to the
+/// buffer on the way - on macOS by VideoToolbox's own pixel transfer (cvpx.c,
+/// CVPX to CVPX), on iOS by swscale - so the buffer holds the whole picture,
+/// two rows taller, and Flutter squeezes those two rows back out by showing
+/// the whole buffer at the picture's own size (see CodedSize).
+///
+/// Two rows: the least that is larger and keeps NV12's even height.
+constexpr uint32_t kSubtitleRows = 2;
 
 /// Bounds the pool so a stalled consumer cannot grow it without limit. One
 /// buffer is being written, one is published, and the engine may hold one or
@@ -62,9 +83,15 @@ class CVPixelBufferSink final : public vlc_player::VlcFrameSink {
     if (format->width == 0 || format->height == 0) {
       return 0;
     }
+    // libVLC names the decoder's chroma here; every CoreVideo one starts
+    // `CVP` (VLC_CODEC_CVPX_NV12 is 'CVPN', and so on).
+    const bool video_toolbox = std::strncmp(format->chroma, "CVP", 3) == 0;
+    if (video_toolbox) {
+      format->height += kSubtitleRows;
+    }
     // libVLC's video thread has no autorelease pool of its own.
     @autoreleasepool {
-      return ConfigurePool(format);
+      return ConfigurePool(format, video_toolbox);
     }
   }
 
@@ -222,7 +249,7 @@ class CVPixelBufferSink final : public vlc_player::VlcFrameSink {
   }
 
  private:
-  uint32_t ConfigurePool(vlc_player::VlcFrameFormat* format) {
+  uint32_t ConfigurePool(vlc_player::VlcFrameFormat* format, bool scaled) {
     NSDictionary* attributes = @{
       (id)kCVPixelBufferPixelFormatTypeKey : @(kPixelFormat),
       (id)kCVPixelBufferWidthKey : @(format->width),
@@ -271,6 +298,7 @@ class CVPixelBufferSink final : public vlc_player::VlcFrameSink {
     std::memcpy(format->chroma, kChroma, sizeof(kChroma));
     coded_width_ = format->width;
     coded_height_ = format->height;
+    scaled_ = scaled;
     return kPlaneCount;
   }
 
@@ -279,8 +307,16 @@ class CVPixelBufferSink final : public vlc_player::VlcFrameSink {
   /// 1080p stream is 1920x1088 because the decoder pads height to a multiple
   /// of 16. Only the visible rows get written; the padding stays zero, and
   /// zero in NV12 is green. Flutter has to know this size to clip it off.
+  ///
+  /// Zero - no size to clip to - for a VideoToolbox picture: libVLC scales
+  /// that one to fill every row of the buffer (see kSubtitleRows), so the
+  /// whole buffer is picture, and Flutter shows all of it at the picture's
+  /// own size.
   CGSize CodedSize() {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (scaled_) {
+      return CGSizeZero;
+    }
     return CGSizeMake(coded_width_, coded_height_);
   }
 
@@ -317,6 +353,7 @@ class CVPixelBufferSink final : public vlc_player::VlcFrameSink {
   uint32_t lines_[vlc_player::kVlcMaxPlanes] = {};
   uint32_t coded_width_ = 0;
   uint32_t coded_height_ = 0;
+  bool scaled_ = false;
 
   /// The picture libVLC is filling. Published once it is both displayed
   /// (Commit) and finished with (Release) - libVLC 3's vmem output calls

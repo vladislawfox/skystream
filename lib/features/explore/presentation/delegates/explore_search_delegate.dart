@@ -375,31 +375,15 @@ void _navigateToItem(
       item.url.startsWith('kitsu:');
 
   if (isAddon) {
-    final String type;
-    final String id;
-    final String? addonUrl;
-
-    if (item.url.startsWith('addon:')) {
-      final parts = item.url.split(':');
-      type = parts.length >= 2
-          ? parts[1]
-          : (item.contentType == MultimediaContentType.series
-                ? 'series'
-                : 'movie');
-      id = parts.length >= 3 ? parts[2] : item.url;
-      addonUrl = parts.length > 3 ? parts.sublist(3).join(':') : null;
-    } else {
-      type = item.contentType == MultimediaContentType.series
-          ? 'series'
-          : 'movie';
-      id = item.url;
-      addonUrl = null;
-    }
-
+    final listed = parseAddonSearchItemUrl(item.url);
     AddonDetailRoute(
-      type: type,
-      id: id,
-      addonUrl: addonUrl,
+      type:
+          listed?.type ??
+          (item.contentType == MultimediaContentType.series
+              ? 'series'
+              : 'movie'),
+      id: listed?.id ?? item.url,
+      addonUrl: listed?.addonUrl,
     ).push<void>(context);
     return;
   }

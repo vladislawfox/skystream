@@ -4,6 +4,17 @@ import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:skystream/features/player/presentation/widgets/player_stream_widgets.dart';
 
+/// Says a remote is driving, which is the only time focus is drawn at all -
+/// see `shared/focus/app_focus.dart`. Without it the test platform's default
+/// is `touch`, and a focused bar rightly shows nothing.
+void remoteDriving() {
+  FocusManager.instance.highlightStrategy =
+      FocusHighlightStrategy.alwaysTraditional;
+  addTearDown(() {
+    FocusManager.instance.highlightStrategy = FocusHighlightStrategy.automatic;
+  });
+}
+
 void main() {
   /// The 1.5px hover line is the only widget in the scrubber with that width.
   final hoverLine = find.byWidgetPredicate(
@@ -106,6 +117,7 @@ void main() {
   // track and a 14 px thumb, three metres away.
   testWidgets('the TV bar has a fatter track, a fatter focused thumb and the '
       'accent ring', (tester) async {
+    remoteDriving();
     final focus = FocusNode();
     addTearDown(focus.dispose);
 
@@ -131,6 +143,7 @@ void main() {
     // width on top of that - a second, larger answer to a question the first
     // had already answered, and on a ten-foot bar a 1200 dp box around a
     // 20 dp cursor.
+    remoteDriving();
     final focus = FocusNode();
     addTearDown(focus.dispose);
 
@@ -157,6 +170,25 @@ void main() {
         reason: 'nothing in the bar draws a border around itself',
       );
     }
+  });
+
+  testWidgets('under a thumb a focused bar keeps its resting thumb', (
+    tester,
+  ) async {
+    // Focus reaches the bar under a finger too - the controls hand it round
+    // for the remote whatever is driving - and a swollen thumb there is a
+    // cursor nobody is steering.
+    final focus = FocusNode();
+    addTearDown(focus.dispose);
+
+    await pumpSeekBar(tester, focusNode: focus);
+    final resting = bandHeights(tester).last;
+
+    focus.requestFocus();
+    await tester.pump();
+
+    expect(focus.hasFocus, isTrue);
+    expect(bandHeights(tester).last, resting);
   });
 
   // Without this the bar is invisible to a screen reader: no role, no

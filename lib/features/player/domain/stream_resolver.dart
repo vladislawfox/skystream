@@ -24,6 +24,7 @@ import '../../../core/extensions/extension_manager.dart';
 import '../../../core/extensions/providers.dart';
 import '../../../core/storage/history_repository.dart';
 import '../../../core/network/http_defaults.dart';
+import '../../../core/network/probe_answer.dart';
 import '../../../core/utils/app_utils.dart';
 import '../../../core/utils/stream_quality_sorter.dart';
 import '../../../l10n/generated/app_localizations.dart';
@@ -203,7 +204,31 @@ String describeStreamFailure(
 ///
 /// [trying] is reported when the probe is dispatched rather than when it
 /// answers, because the probes run as a parallel race.
-enum ProbeOutcome { trying, healthy, unhealthy }
+enum ProbeOutcome {
+  trying,
+
+  /// It answered with something to play, and nothing says it cannot be
+  /// sought in.
+  healthy,
+
+  /// It answered with something to play, from a server that ignores byte
+  /// ranges: it plays, but only from its start, so it cannot be sought in and
+  /// a resume starts it over. Google's video-downloads host is one.
+  unseekable,
+
+  /// No answer, or a refusal.
+  unhealthy,
+
+  /// It answered with a web page - a link generator, a login, a missing-file
+  /// page served with a 200 - rather than anything to play.
+  notVideo,
+}
+
+extension ProbeOutcomeReach on ProbeOutcome {
+  /// Whether the check got an answer a player can open, seekable or not.
+  bool get reached =>
+      this == ProbeOutcome.healthy || this == ProbeOutcome.unseekable;
+}
 
 /// Resolves [videoUrl] for [item] into playable streams.
 ///
@@ -516,14 +541,14 @@ Future<int> _firstHealthyStream(
 
   late final void Function() dispatchNext;
 
-  void record(int idx, bool healthy) {
+  void record(int idx, ProbeOutcome outcome) {
     // Reported before the completion guard, so a candidate that answers after
     // the check is over still explains itself rather than staying "trying"
     // on screen forever.
-    onProbe?.call(idx, healthy ? ProbeOutcome.healthy : ProbeOutcome.unhealthy);
-    results[idx] = healthy;
+    onProbe?.call(idx, outcome);
+    results[idx] = outcome.reached;
     // Also once decided: the replacement is for the list, not the choice.
-    if (!healthy && !abandoned) dispatchNext();
+    if (!outcome.reached && !abandoned) dispatchNext();
     decide();
   }
 
@@ -532,9 +557,9 @@ Future<int> _firstHealthyStream(
     final idx = order[dispatched++];
     onProbe?.call(idx, ProbeOutcome.trying);
     unawaited(
-      _isHealthy(streams[idx])
-          .then((h) => record(idx, h))
-          .catchError((_) => record(idx, false)),
+      _probe(streams[idx])
+          .then((outcome) => record(idx, outcome))
+          .catchError((_) => record(idx, ProbeOutcome.unhealthy)),
     );
   };
 
@@ -579,39 +604,93 @@ bool isUncheckableSource(StreamResult stream) =>
     stream.url.endsWith('.torrent') ||
     stream.url.startsWith('/');
 
-/// The health probe for one source, outside the race: the same HEAD and
-/// ranged GET, for a source opened without having been checked - picked by
-/// the viewer from past the top few, or reached by failover.
-Future<bool> isReachable(StreamResult stream) => _isHealthy(stream);
+/// The health probe for one source, outside the race: the same ranged GET and
+/// HEAD, for a source opened without having been checked - picked by the
+/// viewer from past the top few, or reached by failover.
+Future<bool> isReachable(StreamResult stream) async =>
+    (await probeSource(stream)).reached;
 
-/// HEAD first, then a one-byte ranged GET for servers that reject HEAD.
-Future<bool> _isHealthy(StreamResult stream) async {
-  if (isUncheckableSource(stream)) return true;
+/// What the health probe finds out about one source, outside the race.
+Future<ProbeOutcome> probeSource(StreamResult stream) => _probe(stream);
+
+/// A ranged GET for the first kilobyte, then a HEAD for servers that refuse
+/// it.
+///
+/// The GET answers all the check asks in one request: whether the link
+/// answers, whether its server serves byte ranges - the only way a player can
+/// jump into a file over HTTP - and, from the first bytes, whether it is a
+/// video at all. A HEAD proves only the first, so it is the fallback rather
+/// than the lead: a server that refuses the ranged request but answers a
+/// plain one still counts as reachable, with nothing said about seeking.
+Future<ProbeOutcome> _probe(StreamResult stream) async {
+  if (isUncheckableSource(stream)) return ProbeOutcome.healthy;
 
   final uri = Uri.tryParse(stream.url);
-  if (uri == null || !uri.hasScheme) return false;
+  if (uri == null || !uri.hasScheme) return ProbeOutcome.unhealthy;
   final headers = playbackHeaders(stream);
-
-  try {
-    final resp = await http
-        .head(uri, headers: headers)
-        .timeout(const Duration(seconds: 3));
-    if (resp.statusCode < 400) return true;
-  } catch (_) {
-    // Fall through to the ranged GET.
-  }
 
   final client = http.Client();
   try {
     final request = http.Request('GET', uri);
     request.headers.addAll(headers);
-    request.headers.putIfAbsent('Range', () => 'bytes=0-0');
+    request.headers.putIfAbsent(
+      'Range',
+      () => 'bytes=0-${kProbeSniffBytes - 1}',
+    );
     final resp = await client.send(request).timeout(const Duration(seconds: 3));
-    await resp.stream.listen((_) {}).cancel();
-    return resp.statusCode < 400 || resp.statusCode == 416;
+    // Nothing to range over: an empty file, which the old one-byte check
+    // passed too.
+    if (resp.statusCode == 416) return ProbeOutcome.healthy;
+    if (resp.statusCode < 400) {
+      final type = resp.headers['content-type'];
+      // Only a page or a playlist is worth reading; a server that ignores the
+      // range is sending the whole file behind these bytes.
+      final head = mayBeWebPage(type)
+          ? await _firstBytes(resp.stream).timeout(
+              const Duration(seconds: 3),
+              onTimeout: () => const <int>[],
+            )
+          : const <int>[];
+      return _outcomeOf(uri, resp, head);
+    }
   } catch (_) {
-    return false;
+    // Fall through to the HEAD.
   } finally {
+    // Hangs up whatever of the body was not read.
     client.close();
   }
+
+  try {
+    final resp = await http
+        .head(uri, headers: headers)
+        .timeout(const Duration(seconds: 3));
+    if (resp.statusCode < 400) return ProbeOutcome.healthy;
+  } catch (_) {
+    // No answer to either.
+  }
+  return ProbeOutcome.unhealthy;
+}
+
+/// What an answer to the ranged GET says about playing [url].
+ProbeOutcome _outcomeOf(Uri url, http.BaseResponse resp, List<int> head) {
+  final type = resp.headers['content-type'];
+  if (isPlaylist(url, type, head)) return ProbeOutcome.healthy;
+  if (isWebPage(type, head)) return ProbeOutcome.notVideo;
+  final ranged =
+      resp.statusCode == 206 ||
+      resp.headers.containsKey('content-range') ||
+      (resp.headers['accept-ranges']?.toLowerCase().contains('bytes') ?? false);
+  return ranged ? ProbeOutcome.healthy : ProbeOutcome.unseekable;
+}
+
+/// Up to [kProbeSniffBytes] from the start of [body]. Leaving the loop early
+/// cancels the subscription, so the rest is never read.
+Future<List<int>> _firstBytes(Stream<List<int>> body) async {
+  final bytes = <int>[];
+  await for (final chunk in body) {
+    final room = kProbeSniffBytes - bytes.length;
+    bytes.addAll(chunk.length > room ? chunk.sublist(0, room) : chunk);
+    if (bytes.length >= kProbeSniffBytes) break;
+  }
+  return bytes;
 }

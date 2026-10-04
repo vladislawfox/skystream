@@ -284,6 +284,8 @@
   "liveStreams": "Uživo",
   "debug": "DEBUG",
   "extensionsUpdated": "{count, plural, one{1 proširenje ažurirano} few{{count} proširenja ažurirana} other{{count} proširenja ažurirano}}",
+  "extensionsNewRepositories": "{count, plural, one{{count} novi repozitorij u {source}} few{{count} nova repozitorija u {source}} other{{count} novih repozitorija u {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{{count} novi plagin u {repository}} few{{count} nova plagina u {repository}} other{{count} novih plagina u {repository}}}",
   "invalidNavigation": "Neispravna navigacija.",
   "startOver": "Počni ponovno",
   "goBack": "Natrag",

@@ -544,6 +544,36 @@ void main() {
       }, () => answering(dead: {'b'}, held: {'b': b}));
     });
 
+    test('a web page is passed over like a dead link', () async {
+      final outcomes = <int, ProbeOutcome>{};
+      final resolved = await http.runWithClient(
+        () => resolvePlayback(
+          read: readerOf(defaults),
+          item: itemWith(),
+          videoUrl: 'https://example.com/episode/1',
+          preloadedStreams: [at('a'), at('b')],
+          onProbe: (index, outcome) => outcomes[index] = outcome,
+        ),
+        () => MockClient((request) async {
+          if (request.url.path.endsWith('/a.mkv')) {
+            return http.Response(
+              '<!doctype html><html><body>Link Generator</body></html>',
+              200,
+              headers: {'content-type': 'text/html'},
+            );
+          }
+          return http.Response(
+            'x',
+            206,
+            headers: {'content-range': 'bytes 0-0/10'},
+          );
+        }),
+      );
+
+      expect(resolved.index, 1);
+      expect(outcomes[0], ProbeOutcome.notVideo);
+    });
+
     // Fifty dead links at up to six seconds a batch is minutes of spinner.
     test('the time limit opens the best found so far', () async {
       final slow = Completer<void>();
@@ -604,6 +634,113 @@ void main() {
         }),
       );
       expect(ok, isFalse);
+    });
+
+    test('is false for one that answers with a web page', () async {
+      final ok = await http.runWithClient(
+        () => isReachable(stream),
+        () => MockClient(
+          (_) async => http.Response(
+            '<!DOCTYPE html><html><head></head></html>',
+            200,
+            headers: {'content-type': 'text/html'},
+          ),
+        ),
+      );
+      expect(ok, isFalse);
+    });
+  });
+
+  // The check reads what answered, not only that something did. HubCloud's
+  // 10Gbps buttons answer 200 with a link generator - a web page whose script
+  // sends a browser on to the file - and a server that ignores byte ranges
+  // plays a file only from its start: no seeking, and no resuming.
+  group('what the check finds', () {
+    const file = StreamResult(url: 'https://cdn.test/a.mkv', source: 'A');
+
+    Future<ProbeOutcome> probe(
+      StreamResult stream,
+      Future<http.Response> Function(http.Request request) answer,
+    ) =>
+        http.runWithClient(() => probeSource(stream), () => MockClient(answer));
+
+    test('a web page is not a video', () async {
+      final outcome = await probe(
+        file,
+        (_) async => http.Response(
+          '<!DOCTYPE html>\n<html lang="en"><head><title>HubCloud - Link '
+          'Generator</title></head><body></body></html>',
+          200,
+          headers: {'content-type': 'text/html; charset=UTF-8'},
+        ),
+      );
+      expect(outcome, ProbeOutcome.notVideo);
+    });
+
+    test('a playlist a script serves as a web page is a playlist', () async {
+      final outcome = await probe(
+        const StreamResult(url: 'https://cdn.test/live.php?id=7', source: 'A'),
+        (_) async => http.Response(
+          '#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:10,\nseg0.ts\n',
+          200,
+          headers: {'content-type': 'text/html; charset=UTF-8'},
+        ),
+      );
+      expect(outcome, ProbeOutcome.healthy);
+    });
+
+    test('a file served in ranges can be sought in', () async {
+      final outcome = await probe(
+        file,
+        (_) async => http.Response(
+          'x',
+          206,
+          headers: {
+            'content-type': 'video/x-matroska',
+            'content-range': 'bytes 0-0/19986728180',
+          },
+        ),
+      );
+      expect(outcome, ProbeOutcome.healthy);
+    });
+
+    test(
+      'a file whose server ignores ranges plays only from the start',
+      () async {
+        // video-downloads.googleusercontent.com: 200 and the whole file from
+        // byte 0, whatever range is asked for.
+        final outcome = await probe(
+          file,
+          (_) async => http.Response(
+            'the first bytes of the file',
+            200,
+            headers: {'content-type': 'video/mkv'},
+          ),
+        );
+        expect(outcome, ProbeOutcome.unseekable);
+      },
+    );
+
+    test('a playlist needs no ranges to be sought in', () async {
+      final outcome = await probe(
+        const StreamResult(url: 'https://cdn.test/a.m3u8', source: 'A'),
+        (_) async => http.Response(
+          '#EXTM3U\n',
+          200,
+          headers: {'content-type': 'application/vnd.apple.mpegurl'},
+        ),
+      );
+      expect(outcome, ProbeOutcome.healthy);
+    });
+
+    test('a server that refuses the ranged request is asked plainly', () async {
+      final outcome = await probe(file, (request) async {
+        if (request.method == 'GET') {
+          throw http.ClientException('reset', request.url);
+        }
+        return http.Response('', 200, headers: {'content-type': 'video/mp4'});
+      });
+      expect(outcome, ProbeOutcome.healthy);
     });
   });
 

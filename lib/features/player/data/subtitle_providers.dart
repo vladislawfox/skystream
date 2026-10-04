@@ -643,6 +643,29 @@ class SubSourceProvider extends SubtitleProvider {
   /// season-only fallback pass, which exists precisely to surface untagged
   /// season packs. That pass still drops anything that positively declares a
   /// different season.
+  /// The search result to list subtitles for: the best match's entry for
+  /// [season] when its show is listed once per season, as SubSource lists
+  /// them - each season its own id, and /subtitles only ever sees the one id
+  /// asked for. Taking the first entry found subtitles for season one alone.
+  ///
+  /// Only the same show's seasons are considered: a text search lists other
+  /// shows too, and their season [season] is no answer. The first entry
+  /// otherwise - a film, or a show listed once.
+  static dynamic _entryForSeason(List<dynamic> entries, int? season) {
+    final first = entries.first;
+    if (season != null && season > 0 && first is Map) {
+      final show = '${first['title']}'.trim().toLowerCase();
+      for (final entry in entries) {
+        if (entry is Map &&
+            '${entry['title']}'.trim().toLowerCase() == show &&
+            int.tryParse('${entry['season']}') == season) {
+          return entry;
+        }
+      }
+    }
+    return first;
+  }
+
   static bool _matchesSeasonEpisode(
     String releaseName,
     int? season,
@@ -740,7 +763,7 @@ class SubSourceProvider extends SubtitleProvider {
       final List<dynamic> movies = searchResponse.data?['data'] as List? ?? [];
       if (movies.isEmpty) return [];
 
-      final movie = movies.first;
+      final movie = _entryForSeason(movies, season);
       final movieId = movie['movieId'] ?? movie['id'];
 
       final Map<String, dynamic> subParams = {'movieId': movieId};

@@ -577,6 +577,9 @@ class DetailsController extends _$DetailsController {
   }
 
   Future<void> handlePlayPress(
+    // Only handed on to the launcher, which needs it to push the player;
+    // choosing the episode is the part that belongs here.
+    // ignore: riverpod_lint/avoid_build_context_in_providers
     BuildContext context,
     MultimediaItem details, {
     Episode? specificEpisode,

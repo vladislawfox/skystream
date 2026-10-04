@@ -1,3 +1,5 @@
+// Test doubles expose what they recorded.
+// ignore_for_file: riverpod_lint/avoid_public_notifier_properties
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:skystream/features/library/presentation/history_provider.dart';

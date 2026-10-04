@@ -984,9 +984,14 @@ void showDefaultPlayerDialog(
       content: SingleChildScrollView(
         child: RadioGroup<String?>(
           groupValue: currentPlayerId,
-          onChanged: (val) {
-            ref.read(playerSettingsProvider.notifier).setPreferredPlayer(val);
-            Navigator.pop<void>(context);
+          onChanged: (val) async {
+            // Close only once the choice is on disk: a relaunch in the gap
+            // would read the old player back and the "Default Player" row
+            // would lie until the next launch.
+            await ref
+                .read(playerSettingsProvider.notifier)
+                .setPreferredPlayer(val);
+            if (context.mounted) Navigator.pop<void>(context);
           },
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -999,11 +1004,11 @@ void showDefaultPlayerDialog(
                   subtitle: Text(l10n.builtInPlayer),
                   leading: const Radio<String?>(value: null),
                   trailing: const Icon(Icons.play_circle_filled_rounded),
-                  onTap: () {
-                    ref
+                  onTap: () async {
+                    await ref
                         .read(playerSettingsProvider.notifier)
                         .setPreferredPlayer(null);
-                    Navigator.pop<void>(context);
+                    if (context.mounted) Navigator.pop<void>(context);
                   },
                 ),
               ),
@@ -1017,11 +1022,11 @@ void showDefaultPlayerDialog(
                     title: Text(player.displayName),
                     leading: Radio<String?>(value: player.id),
                     trailing: Icon(player.icon),
-                    onTap: () {
-                      ref
+                    onTap: () async {
+                      await ref
                           .read(playerSettingsProvider.notifier)
                           .setPreferredPlayer(player.id);
-                      Navigator.pop<void>(context);
+                      if (context.mounted) Navigator.pop<void>(context);
                     },
                   ),
                 );
@@ -2801,8 +2806,22 @@ class _TmdbApiKeyDialogState extends ConsumerState<_TmdbApiKeyDialog> {
     super.dispose();
   }
 
+  /// The key as TMDB expects it: whatever a copy smuggled in is removed -
+  /// whitespace anywhere in it, as a key wrapped across two lines arrives,
+  /// and the zero-width characters chat apps and web pages insert, which
+  /// `trim()` does not count as whitespace. Either one turns a good key into
+  /// a 401.
+  static String _normalizedKey(String raw) =>
+      raw.replaceAll(RegExp(r'[\s​-‍⁠﻿]'), '');
+
+  /// TMDB's API page shows two credentials side by side. The v4 "API Read
+  /// Access Token" is a JWT - three dot-separated parts, the first starting
+  /// `eyJ` - and TMDB answers it with the same 401 as a mistyped key.
+  static bool _isReadAccessToken(String key) =>
+      key.startsWith('eyJ') && '.'.allMatches(key).length == 2;
+
   Future<void> _save() async {
-    final key = _controller.text.trim();
+    final key = _normalizedKey(_controller.text);
 
     // Empty is a legitimate input: it clears the override and falls
     // back to the build-time key.
@@ -2812,15 +2831,26 @@ class _TmdbApiKeyDialogState extends ConsumerState<_TmdbApiKeyDialog> {
       return;
     }
 
+    if (_isReadAccessToken(key)) {
+      setState(() {
+        _errorText =
+            'That is the "API Read Access Token". Paste the shorter '
+            '"API Key" from the same TMDB page instead.';
+      });
+      return;
+    }
+
     setState(() {
       _isChecking = true;
       _errorText = null;
     });
 
-    var valid = false;
+    // Each failure says what it was. One message for all of them told a user
+    // whose network cannot reach TMDB that their key was wrong.
+    String? problem;
     try {
       final dio = ref.read(dioClientProvider);
-      final res = await dio.get<Map<String, dynamic>>(
+      final res = await dio.get<Object?>(
         '${TmdbConfig.baseUrl}/authentication',
         queryParameters: {'api_key': key},
         options: Options(
@@ -2828,22 +2858,34 @@ class _TmdbApiKeyDialogState extends ConsumerState<_TmdbApiKeyDialog> {
           receiveTimeout: const Duration(seconds: 15),
         ),
       );
-      valid = res.statusCode == 200;
+      final body = res.data;
+      if (res.statusCode == 200 && body is Map && body['success'] == true) {
+        problem = null;
+      } else if (res.statusCode == 401) {
+        problem =
+            'TMDB rejected this key. Check that it is the "API Key" '
+            '(v3 auth), 32 letters and digits.';
+      } else if (res.statusCode == 200) {
+        // Something answered for api.themoviedb.org that is not TMDB - the
+        // block page a filtering network serves.
+        problem = _unreachable;
+      } else {
+        problem =
+            'TMDB could not check the key right now (HTTP '
+            '${res.statusCode}). Try again in a moment.';
+      }
     } catch (_) {
-      // Network failure is not the same as a bad key; fall through to
-      // the generic message so an offline user isn't told their key
-      // is wrong.
-      valid = false;
+      // Nothing was learned about the key: no connection, a timeout, or a
+      // network that will not resolve TMDB.
+      problem = _unreachable;
     }
 
     if (!mounted) return;
 
-    if (!valid) {
+    if (problem != null) {
       setState(() {
         _isChecking = false;
-        _errorText =
-            'Could not verify this key. Check the key and your '
-            'connection, then try again.';
+        _errorText = problem;
       });
       return;
     }
@@ -2852,6 +2894,11 @@ class _TmdbApiKeyDialogState extends ConsumerState<_TmdbApiKeyDialog> {
 
     if (mounted) Navigator.pop<void>(context);
   }
+
+  static const String _unreachable =
+      "Couldn't reach TMDB to check the key. If your network blocks TMDB, "
+      'turn on DNS over HTTPS in Accounts, Network & Downloads, then try '
+      'again.';
 
   @override
   Widget build(BuildContext context) {
@@ -2877,6 +2924,8 @@ class _TmdbApiKeyDialogState extends ConsumerState<_TmdbApiKeyDialog> {
                 labelText: 'API key (v3 auth)',
                 hintText: 'e.g. 0123456789abcdef0123456789abcdef',
                 errorText: _errorText,
+                // The reasons are sentences; a single line cut them off.
+                errorMaxLines: 4,
                 prefixIcon: const Icon(Icons.vpn_key_rounded, size: 20),
               ),
               keyboardType: TextInputType.text,

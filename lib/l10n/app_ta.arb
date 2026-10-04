@@ -284,6 +284,8 @@
   "liveStreams": "நேரடி ஒளிபரப்புகள்",
   "debug": "பிழைத்திருத்தம்",
   "extensionsUpdated": "{count, plural, =1{1 நீட்டிப்பு புதுப்பிக்கப்பட்டது} other{{count} நீட்டிப்புகள் புதுப்பிக்கப்பட்டன}}",
+  "extensionsNewRepositories": "{count, plural, =1{{source}-இல் 1 புதிய ரிப்போசிட்டரி} other{{source}-இல் {count} புதிய ரிப்போசிட்டரிகள்}}",
+  "extensionsNewPlugins": "{count, plural, =1{{repository}-இல் 1 புதிய செருகுநிரல்} other{{repository}-இல் {count} புதிய செருகுநிரல்கள்}}",
   "invalidNavigation": "தவறான வழிசெலுத்தல். தயவுசெய்து பின்னோக்கிச் செல்லவும்.",
   "startOver": "மீண்டும் தொடங்கு",
   "goBack": "பின்னோக்கி",

@@ -24,6 +24,9 @@ import 'package:dynamic_color/dynamic_color.dart';
 
 import 'core/utils/app_utils.dart';
 import 'features/extensions/providers/extensions_controller.dart';
+import 'core/addons/data/addon_repository.dart';
+import 'core/models/extension_update_report.dart';
+import 'core/nuvio/data/nuvio_repository.dart';
 import 'features/extensions/widgets/extensions_sync_bridge.dart';
 import 'core/providers/update_provider.dart';
 import 'core/widgets/update_dialog.dart';
@@ -99,7 +102,11 @@ void main() async {
     );
   }
 
+  // AppRoot opens storage and then builds the app's ProviderScope, which the
+  // rule cannot see through.
+  // ignore: riverpod_lint/missing_provider_scope
   AppUtils.setRestartFunction(() => runApp(const AppRoot()));
+  // ignore: riverpod_lint/missing_provider_scope
   runApp(const AppRoot());
 }
 
@@ -201,6 +208,9 @@ class _AppRootState extends State<AppRoot> {
     }
 
     return ProviderScope(
+      // The app's root scope - below AppRoot only because storage has to open
+      // first - so there is no parent scope for dependencies to describe.
+      // ignore: riverpod_lint/scoped_providers_should_specify_dependencies
       overrides: [storageServiceProvider.overrideWithValue(_storageService)],
       child: const ExtensionsSyncBridge(child: MyApp()),
     );
@@ -312,17 +322,16 @@ class _MyAppState extends ConsumerState<MyApp> {
   /// stream provider.
   ///
   /// Local disk only: no repository manifest is fetched here. Discovering
-  /// *newer* versions is [_checkExtensionsUpdates]'s job and it stays behind
-  /// its gates (nothing checked for six hours, not on a metered connection).
-  /// Loading what is already installed must not sit behind those gates. The
-  /// installed inventory is the only thing that ever populates
-  /// [ExtensionManager] - `ExtensionsSyncBridge` listens for it to change and
-  /// syncs it across - and with it empty `getAllProviders()` is empty, so
-  /// search finds nothing, the details screen offers no sources, and the home
-  /// screen's active-provider resolution never completes: it spins forever
-  /// waiting for a sync that cannot arrive. Skipping this because a repository
-  /// was last checked an hour ago, or because the phone is on cellular, would
-  /// strand exactly the users who already have plugins installed.
+  /// *newer* versions is [_checkExtensionsUpdates]'s job, and it waits for the
+  /// launch to finish first. Loading what is already installed must not wait
+  /// on the network at all. The installed inventory is the only thing that
+  /// ever populates [ExtensionManager] - `ExtensionsSyncBridge` listens for it
+  /// to change and syncs it across - and with it empty `getAllProviders()` is
+  /// empty, so search finds nothing, the details screen offers no sources, and
+  /// the home screen's active-provider resolution never completes: it spins
+  /// forever waiting for a sync that cannot arrive. Tying this to a
+  /// repository answering would strand exactly the users who already have
+  /// plugins installed, whenever that repository is slow or unreachable.
   Future<void> _loadInstalledExtensions() async {
     try {
       await ref
@@ -343,56 +352,79 @@ class _MyAppState extends ConsumerState<MyApp> {
   /// screen, so it waits until the launch is over rather than racing it.
   static const Duration _extensionsCheckDelay = Duration(seconds: 15);
 
-  /// Refreshes the plugin repositories in the background and, if anything is
-  /// newer than what is installed, says so. Installs nothing - see
-  /// [ExtensionsController.checkForUpdates].
+  /// Brings every extension system up to date in the background - SkyStream
+  /// plugins, Nuvio scrapers and Stremio add-ons - and says what changed:
+  /// what was updated, which repositories a followed collection brought in,
+  /// and which plugins appeared in a repository.
+  ///
+  /// Every launch, on any connection. Extensions scrape sites that change
+  /// under them, and the app's core job - finding something to play - runs on
+  /// them, so a stale one is the difference between a title playing and not.
+  /// The three run side by side, each on its own, so one that fails does not
+  /// hold the others back.
   Future<void> _checkExtensionsUpdates() async {
     await Future<void>.delayed(_extensionsCheckDelay);
     if (!mounted) return;
 
+    final reports = await Future.wait(<Future<ExtensionUpdateReport>>[
+      _updating(
+        'SkyStream plugins',
+        () => ref.read(extensionsControllerProvider.notifier).autoUpdate(),
+      ),
+      _updating(
+        'Nuvio scrapers',
+        () => ref.read(nuvioRepositoryProvider.notifier).autoUpdate(),
+      ),
+      _updating(
+        'Stremio add-ons',
+        () async => ExtensionUpdateReport(
+          updated: await ref
+              .read(addonRepositoryProvider.notifier)
+              .autoUpdate(),
+        ),
+      ),
+    ]);
+    final report = ExtensionUpdateReport.merge(reports);
+    if (report.isEmpty || !mounted) return;
+    _announceExtensionUpdates(report);
+  }
+
+  /// One extension system's pass, with a failure read as "nothing changed".
+  static Future<ExtensionUpdateReport> _updating(
+    String what,
+    Future<ExtensionUpdateReport> Function() update,
+  ) async {
     try {
-      final pending = await ref
-          .read(extensionsControllerProvider.notifier)
-          .autoCheckForUpdates();
-      if (pending.isEmpty || !mounted) return;
-      _announceExtensionUpdates(pending);
+      return await update();
     } catch (e) {
-      if (kDebugMode) debugPrint("Extension update check failed: $e");
+      if (kDebugMode) debugPrint('Updating $what failed: $e');
+      return const ExtensionUpdateReport();
     }
   }
 
-  /// One toast, with the way to act on it attached.
+  /// A toast per kind of news - see [ExtensionUpdateReport.toasts]. Nothing
+  /// to act on: updates are installed, repositories added, and new plugins
+  /// wait on the Extensions screen.
   ///
   /// Reads its strings off the *router's* context: this State sits above
   /// `MaterialApp`, so its own context has no `Localizations` ancestor. If the
-  /// navigator is not up yet there is no toast - the Extensions screen still
-  /// shows an update button per plugin, which is where the install happens
-  /// either way.
-  void _announceExtensionUpdates(List<String> names) {
+  /// navigator is not up yet there is no toast; the work is done either way.
+  void _announceExtensionUpdates(ExtensionUpdateReport report) {
     final router = ref.read(appRouterProvider);
     final navContext = router.routerDelegate.navigatorKey.currentContext;
     if (navContext == null || !navContext.mounted) return;
     final l10n = AppLocalizations.of(navContext);
     if (l10n == null) return;
 
-    ref
-        .read(notificationServiceProvider)
-        .showToast(
-          title: l10n.updateAvailable,
-          message: _pluginNameList(names),
-          type: ToastType.extension,
-          icon: Icons.extension_rounded,
-          actionLabel: l10n.goToExtensions,
-          onAction: () => router.go(const ExtensionsRoute().location),
-        );
-  }
-
-  /// Plugin names, which are proper nouns and never translated, capped so a
-  /// user with twenty repositories does not get a wall of text.
-  static String _pluginNameList(List<String> names) {
-    const maxShown = 5;
-    if (names.length <= maxShown) return names.join(', ');
-    return '${names.take(maxShown).join(', ')} +${names.length - maxShown}';
+    final notifications = ref.read(notificationServiceProvider);
+    for (final toast in report.toasts(l10n)) {
+      notifications.showToast(
+        title: toast.title,
+        message: toast.message,
+        type: ToastType.extension,
+        icon: Icons.extension_rounded,
+      );
+    }
   }
 
   Future<void> _toggleFullscreen() async {
@@ -496,7 +528,13 @@ class _MyAppState extends ConsumerState<MyApp> {
             // UI, the player chrome, dialogs and the toast host alike - reads
             // one answer to "is anyone driving this with a remote or a
             // keyboard right now". See `shared/focus/app_focus.dart`.
-            return FocusVisibilityScope(child: result);
+            //
+            // A television shows focus from the first frame; anything else
+            // waits for a key. See the scope for the rule.
+            return FocusVisibilityScope(
+              television: profile?.isTv == true,
+              child: result,
+            );
           },
         );
 

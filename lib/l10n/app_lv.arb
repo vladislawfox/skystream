@@ -284,6 +284,8 @@
   "liveStreams": "Tiešraides",
   "debug": "DEBUG",
   "extensionsUpdated": "{count, plural, one{1 paplašinājums atjaunināts} other{{count} paplašinājumi atjaunināti}}",
+  "extensionsNewRepositories": "{count, plural, one{{source}: {count} jauns repozitorijs} other{{source}: {count} jauni repozitoriji}}",
+  "extensionsNewPlugins": "{count, plural, one{{repository}: {count} jauns spraudnis} other{{repository}: {count} jauni spraudņi}}",
   "invalidNavigation": "Nederīga navigācija.",
   "startOver": "Sākt no jauna",
   "goBack": "Atpakaļ",

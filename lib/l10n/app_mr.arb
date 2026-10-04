@@ -284,6 +284,8 @@
   "liveStreams": "थेट प्रवाह (Live)",
   "debug": "डीबग",
   "extensionsUpdated": "{count, plural, =1{1 एक्सटेंशन अपडेट केले} other{{count} एक्सटेंशन्स अपडेट केले}}",
+  "extensionsNewRepositories": "{count, plural, =1{{source} मध्ये 1 नवीन रिपॉझिटरी} other{{source} मध्ये {count} नवीन रिपॉझिटरीज}}",
+  "extensionsNewPlugins": "{count, plural, =1{{repository} मध्ये 1 नवीन प्लगइन} other{{repository} मध्ये {count} नवीन प्लगइन्स}}",
   "invalidNavigation": "अवैध नेव्हिगेशन. कृपया परत जा.",
   "startOver": "पुन्हा सुरू करा",
   "goBack": "परत जा",

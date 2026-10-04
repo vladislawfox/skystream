@@ -267,16 +267,20 @@ class _PlayerSourcesTabState extends State<PlayerSourcesTab> {
   ///
   /// Colour only where it says something the word does not: green for a
   /// source that answered, amber for one the check got no answer from - a
-  /// warning, since the probe is wrong about slow hosts. (Red is the failure
-  /// chip's, for a source that was played and failed.) Everything else falls
-  /// through to the ramp's own badge treatment (`metrics.secondaryText` on
-  /// `metrics.divider`), so on a television it is as legible as the badges
-  /// beside it. A literal there is what once left "still looking" at the
-  /// phone's 45 % white on a set that crushes it, reading as "nothing there".
+  /// warning, since the probe is wrong about slow hosts - and for one that
+  /// answered but cannot be sought in. Red is the failure chip's, for a
+  /// source that was played and failed, and a web page is as sure a failure
+  /// as that. Everything else falls through to the ramp's own badge
+  /// treatment (`metrics.secondaryText` on `metrics.divider`), so on a
+  /// television it is as legible as the badges beside it. A literal there is
+  /// what once left "still looking" at the phone's 45 % white on a set that
+  /// crushes it, reading as "nothing there".
   static Color? _reachabilityColour(SourceReachability reachability) =>
       switch (reachability) {
         SourceReachability.reachable => const Color(0xFF4CAF50),
+        SourceReachability.unseekable ||
         SourceReachability.unreachable => const Color(0xFFFFB74D),
+        SourceReachability.notVideo => const Color(0xFFE57373),
         SourceReachability.checking || SourceReachability.notChecked => null,
       };
 }

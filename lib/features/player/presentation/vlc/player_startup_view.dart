@@ -729,6 +729,15 @@ class _SourceRow extends StatelessWidget {
             icon(Icons.check_rounded, Colors.green.shade300, semanticLabel),
         Colors.green.shade300,
       ),
+      // Plays, but only from the start: the icon for "first page".
+      SourceReachability.unseekable => (
+        ({required semanticLabel}) => icon(
+          Icons.first_page_rounded,
+          Colors.amber.shade300,
+          semanticLabel,
+        ),
+        Colors.amber.shade300,
+      ),
       SourceReachability.unreachable => (
         ({required semanticLabel}) => icon(
           Icons.help_outline_rounded,
@@ -736,6 +745,11 @@ class _SourceRow extends StatelessWidget {
           semanticLabel,
         ),
         Colors.amber.shade300,
+      ),
+      SourceReachability.notVideo => (
+        ({required semanticLabel}) =>
+            icon(Icons.web_rounded, Colors.red.shade300, semanticLabel),
+        Colors.red.shade300,
       ),
       SourceReachability.notChecked => null,
     };

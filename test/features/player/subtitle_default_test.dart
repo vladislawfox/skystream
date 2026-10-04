@@ -1,26 +1,27 @@
 /// [SubtitleDefault], driven through the real screen over the real engine
-/// fake, because the setting is not a field - it is a claim about what the
-/// engine has selected once media has finished opening.
+/// fake, because the setting is not a field - it is a claim about what is on
+/// screen once media has finished opening.
 ///
-/// Three things select a subtitle without anybody asking, and each has its own
-/// test here:
+/// Two things draw subtitles: SkyStream, which reads the source's subtitle
+/// files and draws them over the video, and libVLC, which draws the tracks
+/// inside the video. What turns one on without anybody asking, each tested
+/// here:
 ///
-///  * a side-car add, which every native backend makes with libVLC's select
-///    flag hardcoded true, so the add re-selects and Off can only be applied
-///    AFTER the batch - and on a session's first open the adds are replayed on
-///    attach, after the open chain has already finished;
+///  * Auto, choosing the source's file in the viewer's language, or failing
+///    that a track inside the video in it, or failing that the source's last
+///    file;
 ///  * libVLC choosing an EMBEDDED track for itself on the input thread, which
 ///    lands as a snapshot some time after `setMedia` returned;
 ///  * the same again on the next media, because a failover, a recovery and an
 ///    episode advance are each a fresh open.
 ///
-/// And one thing must be able to select one: the viewer, from the Subtitles
+/// And one thing must be able to turn one on: the viewer, from the Subtitles
 /// tab, with nothing turning it back off again for that media.
 ///
-/// Every assertion about what is on goes through [FakeVlcEngine.emit] rather
-/// than the harness's `snapshot()`, because only the fake's own snapshot
-/// carries `subtitleTrack` - which is the single channel all of this travels
-/// on, and the harness's does not have it.
+/// A file on screen is found by its text - the harness serves every file as
+/// one line reading the file's own name ([servedSubtitle]). A track inside
+/// the video is read off [FakeVlcEngine.emit], the only snapshot carrying
+/// `subtitleTrack`.
 ///
 /// Harness rules apply - `settle`, never `pumpAndSettle`, and every test
 /// unmounts in-body so no watchdog timer outlives it.
@@ -82,20 +83,33 @@ void main() {
         subtitles: subtitles,
       );
 
-  /// The names of the tracks the engine is holding, in its own order.
-  List<Object?> trackNames() =>
-      engine.subtitle.map((track) => track['name']).toList();
+  /// Whether SkyStream is drawing the file [name].srt.
+  bool drawing(String name) => find.text('$name.srt').evaluate().isNotEmpty;
 
-  /// The name of the track the engine says is on, or null for none.
-  Object? selectedTrack() {
-    for (final track in engine.subtitle) {
-      if (track['id'] == engine.activeSubtitleId) return track['name'];
-    }
-    return null;
+  /// The tracks inside the video, as the engine lists them - which it does
+  /// once the demuxer has read them, well after the open.
+  Future<void> embed(
+    WidgetTester tester,
+    List<Map<String, Object?>> tracks, {
+    int active = -1,
+  }) async {
+    engine.subtitle = tracks;
+    engine.activeSubtitleId = active;
+    await engine.bumpTracks();
+    await tester.pump(const Duration(milliseconds: 400));
+  }
+
+  /// Opens the Subtitles tab from the control bar, the viewer's only route
+  /// to a subtitle.
+  Future<void> openSubtitles(WidgetTester tester) async {
+    final l10n = await english();
+    await tester.tap(find.byTooltip(l10n.subtitles));
+    await settle(tester);
+    expect(find.byType(PlayerPanel), findsOneWidget);
   }
 
   group('Off', () {
-    testWidgets('leaves no subtitle on once the side-cars have been added', (
+    testWidgets('lists the source\'s files and draws none of them', (
       tester,
     ) async {
       await pumpPlayer(
@@ -111,29 +125,23 @@ void main() {
         ],
         settings: off,
       );
-
-      expect(
-        trackNames(),
-        <String>['english.srt', 'french.srt'],
-        reason:
-            'Off must not skip the batch: the Subtitles menu can only offer '
-            'tracks that exist, and the whole point is that the viewer can '
-            'still turn one on',
-      );
-      expect(
-        selectedTrack(),
-        'french.srt',
-        reason:
-            'the state Off has to undo. Each add selects itself, so the last '
-            'one is on before anything here has had a say - which is why '
-            'disabling ahead of the batch would achieve nothing',
-      );
-
-      // The engine says what it is showing, as it does four times a second.
       await tick(tester);
 
-      expect(engine.activeSubtitleId, -1);
-      expect(selectedTrack(), isNull);
+      expect(drawing('english'), isFalse);
+      expect(drawing('french'), isFalse);
+      expect(
+        engine.methods,
+        isNot(contains('addSubtitle')),
+        reason: 'the files are SkyStream\'s to draw, not libVLC\'s',
+      );
+
+      await openSubtitles(tester);
+      expect(
+        find.widgetWithText(PanelRow, 'english'),
+        findsOneWidget,
+        reason: 'Off is a default: the viewer can still turn one on',
+      );
+      expect(find.widgetWithText(PanelRow, 'french'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox());
     }, variant: texturePlatform);
@@ -147,15 +155,11 @@ void main() {
         settings: off,
       );
 
-      // No side-cars, so nothing was added and nothing was on while the open
-      // chain ran. This is the input thread reaching the media's own subtitle
-      // ES afterwards, which is the only way an embedded track ever arrives.
-      engine.subtitle = const <Map<String, Object?>>[
+      // This is the input thread reaching the media's own subtitle ES after
+      // the open, which is the only way an embedded track ever arrives.
+      await embed(tester, const <Map<String, Object?>>[
         <String, Object?>{'id': 3, 'name': 'Track 3'},
-      ];
-      engine.activeSubtitleId = 3;
-      await engine.bumpTracks();
-      await tester.pump(const Duration(milliseconds: 400));
+      ], active: 3);
 
       expect(engine.activeSubtitleId, -1);
 
@@ -194,7 +198,7 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     }, variant: texturePlatform);
 
-    testWidgets('lets a track the viewer picks stay picked', (tester) async {
+    testWidgets('lets a file the viewer picks stay on', (tester) async {
       await pumpPlayer(
         tester,
         preloadedStreams: <StreamResult>[
@@ -209,20 +213,15 @@ void main() {
         settings: off,
       );
       await tick(tester);
-      expect(engine.activeSubtitleId, -1, reason: 'started off, as asked');
-      final l10n = await english();
+      expect(drawing('english'), isFalse, reason: 'started off, as asked');
 
-      // The viewer's own route to a subtitle, and the only one there is: the
-      // Subtitles tab of the panel, opened from the control bar.
-      await tester.tap(find.byTooltip(l10n.subtitles));
-      await settle(tester);
-      expect(find.byType(PlayerPanel), findsOneWidget);
-      await tester.tap(find.widgetWithText(PanelRow, 'english.srt'));
+      await openSubtitles(tester);
+      await tester.tap(find.widgetWithText(PanelRow, 'english'));
       await settle(tester);
 
       expect(
-        selectedTrack(),
-        'english.srt',
+        drawing('english'),
+        isTrue,
         reason: 'Off is a default, not a lock: the menu still works',
       );
       final int disables = engine.callsTo('disableSubtitle').length;
@@ -231,7 +230,7 @@ void main() {
       for (var i = 0; i < 4; i++) {
         await tick(tester, <String, Object?>{'position': 3000 + i * 500});
       }
-      expect(selectedTrack(), 'english.srt');
+      expect(drawing('english'), isTrue);
       expect(
         engine.callsTo('disableSubtitle').length,
         disables,
@@ -266,26 +265,22 @@ void main() {
         'errorDescription': 'the socket closed',
       });
       await settle(tester);
+      await tick(tester);
 
       expect(
-        trackNames(),
-        contains('spanish.srt'),
-        reason: 'the next candidate really did open and add its own side-car',
-      );
-      expect(
-        engine.activeSubtitleId,
-        -1,
+        drawing('spanish'),
+        isFalse,
         reason:
             'a failover nobody asked for must not switch subtitles on behind '
             'a viewer who set the default to Off',
       );
+      expect(engine.activeSubtitleId, -1);
 
       await tester.pumpWidget(const SizedBox());
     }, variant: texturePlatform);
 
-    testWidgets('does not carry a pick across a recovery of the same source', (
-      tester,
-    ) async {
+    testWidgets('carries a file the viewer picked across a recovery of the '
+        'same source', (tester) async {
       await pumpPlayer(
         tester,
         preloadedStreams: <StreamResult>[
@@ -297,49 +292,38 @@ void main() {
         settings: off,
       );
       await tick(tester);
-      final l10n = await english();
 
-      await tester.tap(find.byTooltip(l10n.subtitles));
+      await openSubtitles(tester);
+      await tester.tap(find.widgetWithText(PanelRow, 'english'));
       await settle(tester);
-      await tester.tap(find.widgetWithText(PanelRow, 'english.srt'));
-      await settle(tester);
-      expect(selectedTrack(), 'english.srt');
+      expect(drawing('english'), isTrue);
 
-      // The source drops after playing. It is reopened - new media to libVLC,
-      // whose side-car batch selects all over again. The documented decision:
-      // a pick belongs to the media it was made against, so the reopened media
-      // starts from the default like any other. Under Auto the same reopen
-      // already overwrites the pick with the preferred language, so this is
-      // not a freedom Off is taking away.
+      // The source drops after playing and is reopened: new media to libVLC,
+      // the same film to the viewer, who was reading it. A reopen restores
+      // the position, and what was on screen goes back with it - the way a
+      // track inside the video is put back after one.
       await tick(tester, <String, Object?>{
         'state': 'error',
         'errorDescription': 'the socket closed',
       });
       await settle(tester);
+      await tick(tester);
 
-      expect(
-        engine.subtitle.length,
-        2,
-        reason: 'the reopen really did add the side-car a second time',
-      );
-      expect(engine.activeSubtitleId, -1);
+      expect(drawing('english'), isTrue);
 
       await tester.pumpWidget(const SizedBox());
     }, variant: texturePlatform);
   });
 
   group('Auto', () {
-    testWidgets('leaves the side-car the select flag chose exactly where it '
-        'was', (tester) async {
+    testWidgets('draws the source\'s file in the viewer\'s language', (
+      tester,
+    ) async {
       await pumpPlayer(
         tester,
         preloadedStreams: <StreamResult>[
           source(
             '/sources/alpha.mkv',
-            // French last and English not preferred-first, so
-            // preferredSubtitleIndex names the final add and
-            // addSideCarSubtitles has nothing to correct - today's behaviour
-            // with no round trip in it.
             subtitles: <SubtitleFile>[
               sub('french', 'fr'),
               sub('english', 'en'),
@@ -350,24 +334,43 @@ void main() {
       );
       await tick(tester);
 
-      expect(selectedTrack(), 'english.srt');
+      expect(drawing('english'), isTrue);
+      expect(drawing('french'), isFalse);
+      expect(engine.methods, isNot(contains('addSubtitle')));
       expect(
         engine.methods,
         isNot(contains('disableSubtitle')),
-        reason: 'Auto must not touch the selection at all',
+        reason: 'libVLC had nothing on, so there was nothing to turn off',
       );
 
       await tester.pumpWidget(const SizedBox());
     }, variant: texturePlatform);
 
-    testWidgets('still selects the preferred language over the last add', (
-      tester,
-    ) async {
-      // On the second open, where the engine is attached and
-      // addSideCarSubtitles can read the track list back. English is added
-      // FIRST and French last, so the select flag leaves French on and only
-      // preferredSubtitleIndex can put English back: this is the one
-      // assertion that the Off work did not quietly disarm.
+    testWidgets('reads a file\'s language off its label when it declares '
+        'none', (tester) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: <StreamResult>[
+          source(
+            '/sources/alpha.mkv',
+            subtitles: <SubtitleFile>[
+              SubtitleFile(url: '/subs/one.srt', label: 'Arabic'),
+              SubtitleFile(url: '/subs/two.srt', label: 'English'),
+              SubtitleFile(url: '/subs/three.srt', label: 'Hindi'),
+            ],
+          ),
+        ],
+        settings: auto,
+      );
+      await tick(tester);
+
+      expect(drawing('two'), isTrue);
+      expect(drawing('three'), isFalse);
+
+      await tester.pumpWidget(const SizedBox());
+    }, variant: texturePlatform);
+
+    testWidgets('draws it after a failover as well', (tester) async {
       await pumpPlayer(
         tester,
         preloadedStreams: <StreamResult>[
@@ -387,16 +390,10 @@ void main() {
         'errorDescription': 'the socket closed',
       });
       await settle(tester);
+      await tick(tester);
 
-      expect(trackNames(), <String>['english.srt', 'french.srt']);
-      expect(
-        selectedTrack(),
-        'english.srt',
-        reason:
-            'french.srt was added last and the select flag left it on; '
-            'preferredSubtitleIndex is what puts English back',
-      );
-      expect(engine.methods, isNot(contains('disableSubtitle')));
+      expect(drawing('english'), isTrue);
+      expect(drawing('french'), isFalse);
 
       await tester.pumpWidget(const SizedBox());
     }, variant: texturePlatform);
@@ -410,15 +407,318 @@ void main() {
         settings: auto,
       );
 
-      engine.subtitle = const <Map<String, Object?>>[
+      await embed(tester, const <Map<String, Object?>>[
         <String, Object?>{'id': 3, 'name': 'Track 3'},
-      ];
-      engine.activeSubtitleId = 3;
-      await engine.bumpTracks();
-      await tester.pump(const Duration(milliseconds: 400));
+      ], active: 3);
+      await tick(tester);
+      await tick(tester);
 
       expect(engine.activeSubtitleId, 3);
       expect(engine.methods, isNot(contains('disableSubtitle')));
+
+      await tester.pumpWidget(const SizedBox());
+    }, variant: texturePlatform);
+
+    testWidgets('turns on the track inside the video that is in the viewer\'s '
+        'language', (tester) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: <StreamResult>[source('/sources/alpha.mkv')],
+        settings: auto,
+      );
+
+      // libVLC turns an embedded track on by itself only when the file flags
+      // it as the default, so a film carrying English subtitles started
+      // without them.
+      await embed(tester, const <Map<String, Object?>>[
+        <String, Object?>{'id': 3, 'name': 'Track 1 - [French]'},
+        <String, Object?>{'id': 4, 'name': 'Track 2 - [English]'},
+      ]);
+      await tick(tester);
+      await tick(tester);
+
+      expect(engine.activeSubtitleId, 4);
+
+      await tester.pumpWidget(const SizedBox());
+    }, variant: texturePlatform);
+
+    testWidgets('looks again when the video lists its subtitles after its '
+        'audio', (tester) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: <StreamResult>[source('/sources/alpha.mkv')],
+        settings: auto,
+      );
+
+      // A resumed MKV: the audio is listed and on before the demuxer has got
+      // to the subtitles, so Auto's first look finds none.
+      engine.audio = const <Map<String, Object?>>[
+        <String, Object?>{'id': 1, 'name': 'Track 1 - [English]'},
+      ];
+      engine.activeAudioId = 1;
+      await engine.bumpTracks();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tick(tester);
+      expect(engine.activeSubtitleId, -1);
+
+      await embed(tester, const <Map<String, Object?>>[
+        <String, Object?>{'id': 3, 'name': 'Track 2 - [French]'},
+        <String, Object?>{'id': 4, 'name': 'Track 3 - [English]'},
+      ]);
+      await tick(tester);
+      await tick(tester);
+
+      expect(engine.activeSubtitleId, 4);
+
+      await tester.pumpWidget(const SizedBox());
+    }, variant: texturePlatform);
+
+    testWidgets('prefers a full track to a forced one in the same language', (
+      tester,
+    ) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: <StreamResult>[source('/sources/alpha.mkv')],
+        settings: auto,
+      );
+
+      await embed(tester, const <Map<String, Object?>>[
+        <String, Object?>{'id': 3, 'name': 'Forced - [English]'},
+        <String, Object?>{'id': 4, 'name': 'SDH - [English]'},
+      ], active: 3);
+      await tick(tester);
+      await tick(tester);
+
+      expect(engine.activeSubtitleId, 4);
+
+      await tester.pumpWidget(const SizedBox());
+    }, variant: texturePlatform);
+
+    testWidgets('falls back to the source\'s last file when nothing is in the '
+        'viewer\'s language', (tester) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: <StreamResult>[
+          source(
+            '/sources/alpha.mkv',
+            subtitles: <SubtitleFile>[
+              sub('french', 'fr'),
+              sub('spanish', 'es'),
+            ],
+          ),
+        ],
+        settings: auto,
+      );
+      await tick(tester);
+      await tick(tester);
+
+      expect(
+        drawing('spanish'),
+        isTrue,
+        reason: 'what Auto always showed when no file matched',
+      );
+      expect(drawing('french'), isFalse);
+
+      await tester.pumpWidget(const SizedBox());
+    }, variant: texturePlatform);
+
+    testWidgets('falls back only once the video plays, so a track in the '
+        'viewer\'s language listed before then still wins', (tester) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: <StreamResult>[
+          source(
+            '/sources/alpha.mkv',
+            subtitles: <SubtitleFile>[
+              sub('french', 'fr'),
+              sub('spanish', 'es'),
+            ],
+          ),
+        ],
+        settings: auto,
+      );
+
+      // Still opening: the audio is listed and on, nothing has played and
+      // the subtitles are not listed yet.
+      engine.audio = const <Map<String, Object?>>[
+        <String, Object?>{'id': 1, 'name': 'Track 1 - [English]'},
+      ];
+      engine.activeAudioId = 1;
+      await engine.bumpTracks(<String, Object?>{'state': 'paused'});
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(drawing('spanish'), isFalse);
+
+      await embed(tester, const <Map<String, Object?>>[
+        <String, Object?>{'id': 4, 'name': 'Track 2 - [English]'},
+      ]);
+      await tick(tester, <String, Object?>{'position': 3000});
+      await tick(tester, <String, Object?>{'position': 4500});
+
+      expect(engine.activeSubtitleId, 4);
+      expect(drawing('spanish'), isFalse);
+      expect(drawing('french'), isFalse);
+
+      await tester.pumpWidget(const SizedBox());
+    }, variant: texturePlatform);
+
+    testWidgets('puts the track inside the video back after a reopen, even '
+        'when the new media lists its subtitles after its audio', (
+      tester,
+    ) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: <StreamResult>[
+          source('/sources/alpha.mkv'),
+          source('/sources/beta.mkv'),
+        ],
+        settings: auto,
+      );
+      engine.audio = const <Map<String, Object?>>[
+        <String, Object?>{'id': 1, 'name': 'Track 1 - [English]'},
+      ];
+      engine.activeAudioId = 1;
+      await embed(tester, const <Map<String, Object?>>[
+        <String, Object?>{'id': 4, 'name': 'Track 2 - [English]'},
+      ]);
+      await tick(tester);
+      await tick(tester);
+      expect(engine.activeSubtitleId, 4, reason: 'Auto turned it on');
+
+      // The source drops and the media is opened again. The new media lists
+      // its audio first, and its subtitles a moment later.
+      await tick(tester, <String, Object?>{
+        'state': 'error',
+        'errorDescription': 'the socket closed',
+      });
+      await settle(tester);
+      engine.subtitle = const <Map<String, Object?>>[];
+      engine.activeSubtitleId = -1;
+      await engine.bumpTracks(<String, Object?>{'state': 'paused'});
+      await tester.pump(const Duration(milliseconds: 400));
+
+      await embed(tester, const <Map<String, Object?>>[
+        <String, Object?>{'id': 7, 'name': 'Track 2 - [English]'},
+      ]);
+      await tick(tester, <String, Object?>{'position': 3000});
+      await tick(tester, <String, Object?>{'position': 4500});
+
+      expect(
+        engine.activeSubtitleId,
+        7,
+        reason: 'the viewer was reading English, and this media has it',
+      );
+
+      await tester.pumpWidget(const SizedBox());
+    }, variant: texturePlatform);
+
+    testWidgets('leaves alone what the viewer picked before the tracks were '
+        'known', (tester) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: <StreamResult>[source('/sources/alpha.mkv')],
+        settings: auto,
+      );
+      await tick(tester);
+      await openSubtitles(tester);
+      final int sets = engine.callsTo('setSubtitleTrack').length;
+
+      await embed(tester, const <Map<String, Object?>>[
+        <String, Object?>{'id': 4, 'name': 'Track 1 - [English]'},
+      ]);
+      await tick(tester);
+      await tick(tester);
+
+      expect(engine.callsTo('setSubtitleTrack').length, sets);
+      expect(engine.activeSubtitleId, -1);
+
+      await tester.pumpWidget(const SizedBox());
+    }, variant: texturePlatform);
+  });
+
+  group('a file and a track inside the video', () {
+    testWidgets('are never on together: libVLC\'s own goes off under a file', (
+      tester,
+    ) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: <StreamResult>[
+          source(
+            '/sources/alpha.mkv',
+            subtitles: <SubtitleFile>[sub('english', 'en')],
+          ),
+        ],
+        settings: auto,
+      );
+      await tick(tester);
+      expect(drawing('english'), isTrue);
+
+      // The media turns one of its own on, as it may at any time.
+      await embed(tester, const <Map<String, Object?>>[
+        <String, Object?>{'id': 3, 'name': 'Track 3'},
+      ], active: 3);
+
+      expect(engine.activeSubtitleId, -1);
+      expect(drawing('english'), isTrue);
+
+      await tester.pumpWidget(const SizedBox());
+    }, variant: texturePlatform);
+
+    testWidgets('picking the track inside the video takes the file off', (
+      tester,
+    ) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: <StreamResult>[
+          source(
+            '/sources/alpha.mkv',
+            subtitles: <SubtitleFile>[sub('english', 'en')],
+          ),
+        ],
+        settings: auto,
+      );
+      await tick(tester);
+      await embed(tester, const <Map<String, Object?>>[
+        <String, Object?>{'id': 3, 'name': 'Commentary'},
+      ]);
+      expect(drawing('english'), isTrue);
+
+      await openSubtitles(tester);
+      await tester.tap(find.widgetWithText(PanelRow, 'Commentary'));
+      await settle(tester);
+      await tick(tester);
+
+      expect(engine.activeSubtitleId, 3);
+      expect(drawing('english'), isFalse);
+
+      // And it stays on: nothing is left believing a file is showing.
+      await tick(tester);
+      await tick(tester);
+      expect(engine.activeSubtitleId, 3);
+
+      await tester.pumpWidget(const SizedBox());
+    }, variant: texturePlatform);
+
+    testWidgets('Off takes whichever is on off', (tester) async {
+      await pumpPlayer(
+        tester,
+        preloadedStreams: <StreamResult>[
+          source(
+            '/sources/alpha.mkv',
+            subtitles: <SubtitleFile>[sub('english', 'en')],
+          ),
+        ],
+        settings: auto,
+      );
+      await tick(tester);
+      expect(drawing('english'), isTrue);
+      final l10n = await english();
+
+      await openSubtitles(tester);
+      await tester.tap(find.widgetWithText(PanelRow, l10n.off));
+      await settle(tester);
+
+      expect(drawing('english'), isFalse);
+      expect(engine.activeSubtitleId, -1);
 
       await tester.pumpWidget(const SizedBox());
     }, variant: texturePlatform);

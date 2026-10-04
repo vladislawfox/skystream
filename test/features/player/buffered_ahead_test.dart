@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:skystream/features/player/domain/buffered_ahead.dart';
 
@@ -104,6 +106,7 @@ void main() {
   });
 
   group('a seek, which is where the counters part company', _seekTests);
+  group('the numbers a real engine gives', _measuredTests);
 
   group('turning it into a bar', () {
     test('the segment ends where the buffer runs out', () {
@@ -416,7 +419,12 @@ void _seekTests() {
     expect(ahead!.inSeconds, closeTo(4, 1));
   });
 
-  test('a backward seek strands nothing', () {
+  // libVLC's prefetch keeps next to nothing it has already handed on - unread
+  // data takes precedence once the buffer is full - so a seek behind the read
+  // point empties it, forward part included, and the access starts again from
+  // the new place. Counting those bytes as still held is what made the band
+  // vanish for good after a few steps back.
+  test('a backward seek strands the whole buffer', () {
     final estimator = BufferedAheadEstimator();
     final s = play(
       estimator,
@@ -429,7 +437,9 @@ void _seekTests() {
       samples: 4,
     );
 
-    estimator.sample(
+    // Thirty seconds back. The access re-reads 1 MB from the new place and
+    // the demuxer takes all of it.
+    final ahead = estimator.sample(
       readBytes: s.read + rate,
       demuxReadBytes: s.demux + rate,
       position: s.position - const Duration(seconds: 30),
@@ -437,12 +447,62 @@ void _seekTests() {
       seekRequests: 1,
     );
 
+    expect(estimator.strandedBytes, 8 * rate);
+    expect(ahead, Duration.zero, reason: 'refilling, not eight seconds held');
+  });
+
+  test('stepping back again and again leaves the band standing', () {
+    final estimator = BufferedAheadEstimator();
+    var demux = 0;
+    // Everything the access read that libVLC then threw away. `readBytes` is
+    // cumulative, so it carries all of it for the rest of the session.
+    var discarded = 0;
+    var position = const Duration(minutes: 30);
+    var at = Duration.zero;
+    const held = 240 * rate; // four minutes
+
+    Duration? sample({required int buffer, required int seeks}) =>
+        estimator.sample(
+          readBytes: demux + discarded + buffer,
+          demuxReadBytes: demux,
+          position: position,
+          at: at,
+          seekRequests: seeks,
+        );
+
+    for (var seek = 1; seek <= 5; seek++) {
+      // Three seconds of playback with the buffer full.
+      for (var i = 0; i < 3; i++) {
+        demux += rate;
+        position += second;
+        at += second;
+        sample(buffer: held, seeks: seek - 1);
+      }
+      // Ten seconds back: the whole buffer goes, and the access re-reads
+      // 1 MB from the new place, which the demuxer takes.
+      discarded += held;
+      demux += rate;
+      position -= const Duration(seconds: 10);
+      at += second;
+      sample(buffer: 0, seeks: seek);
+    }
+
+    // Refill to a known 4 MB and read it back.
+    for (var i = 0; i < 3; i++) {
+      demux += rate;
+      position += second;
+      at += second;
+    }
+    final ahead = sample(buffer: 4 * rate, seeks: 5);
+
     expect(
-      estimator.strandedBytes,
-      0,
-      reason: 'going back re-reads bytes that were already counted, so the '
-          'gap closes on its own',
+      ahead,
+      isNotNull,
+      reason:
+          'five buffers thrown away read as twenty minutes held, past the '
+          'cap, and the band never returned',
     );
+    expect(ahead!.inSeconds, closeTo(4, 1));
   });
 
   test('a media change forgets the correction but keeps the rate baseline', () {
@@ -484,5 +544,137 @@ void _seekTests() {
       isNull,
       reason: 'a demux counter that went backwards is a reset, not a rate',
     );
+  });
+}
+
+/// Figures measured on the Android TV emulator through a logging proxy: a
+/// 3 Mbit/s stream the demuxer reads at about 0.4 MB/s, a 128 MiB prefetch
+/// buffer that fills to about 137 MB between the counters, a demuxer that
+/// takes 2 to 2.5 MB in the second after a seek while it prerolls and refills
+/// its three seconds, and a refill from the network at about 7 MB/s.
+void _measuredTests() {
+  const second = Duration(seconds: 1);
+  const rate = 400000;
+  const held = 137000000;
+
+  /// Plays [samples] ordinary seconds with [held] buffered, starting from
+  /// what [start] says, and returns where it got to.
+  ({int read, int demux, Duration position, Duration at}) steady(
+    BufferedAheadEstimator estimator, {
+    int read = 0,
+    int demux = 0,
+    Duration position = const Duration(minutes: 2),
+    Duration at = Duration.zero,
+    int seeks = 0,
+    int samples = 8,
+    int? capacity,
+  }) {
+    for (var i = 0; i < samples; i++) {
+      demux += rate;
+      read = demux + held;
+      position += second;
+      at += second;
+      estimator.sample(
+        readBytes: read,
+        demuxReadBytes: demux,
+        position: position,
+        at: at,
+        seekRequests: seeks,
+        capacityBytes: capacity,
+      );
+    }
+    return (read: read, demux: demux, position: position, at: at);
+  }
+
+  test('a skip is converted at the rate playback ran at, not the burst after '
+      'it', () {
+    // Ten seconds forward inside the buffer. The demuxer skips 4 MB it will
+    // never read and takes 2.5 MB of burst; the prefetch reads the same back
+    // in. Converted at the burst, the ten seconds came to 25 MB, and the band
+    // read 47 seconds for a buffer of nearly six minutes.
+    final estimator = BufferedAheadEstimator();
+    final s = steady(estimator);
+
+    final ahead = estimator.sample(
+      readBytes: s.read + 6500000,
+      demuxReadBytes: s.demux + 2500000,
+      position: s.position + const Duration(seconds: 11),
+      at: s.at + second,
+      seekRequests: 1,
+    );
+
+    expect(estimator.strandedBytes, closeTo(4000000, 400000));
+    expect(ahead!.inSeconds, closeTo(held / rate, held / rate / 10));
+  });
+
+  test('the band never claims more than the buffer can hold', () {
+    // A step forward whose keyframe fell behind libVLC's read point: it threw
+    // the whole buffer away and filled it again from the network, and a
+    // forward skip only ever strands the seconds skipped. The rest was
+    // counted twice, and a few seconds later the band claimed more than ten
+    // minutes and disappeared.
+    final estimator = BufferedAheadEstimator();
+    final s = steady(estimator, capacity: held);
+    var read = s.read;
+    var demux = s.demux;
+    var position = s.position + const Duration(seconds: 11);
+    var at = s.at + second;
+    read += 7000000;
+    demux += 2500000;
+    estimator.sample(
+      readBytes: read,
+      demuxReadBytes: demux,
+      position: position,
+      at: at,
+      seekRequests: 1,
+      capacityBytes: held,
+    );
+
+    Duration? ahead;
+    for (var i = 0; i < 25; i++) {
+      demux += rate;
+      // Refilling at 7 MB/s until the buffer is full again.
+      read = math.min(read + 7000000, demux + held + held);
+      position += second;
+      at += second;
+      ahead = estimator.sample(
+        readBytes: read,
+        demuxReadBytes: demux,
+        position: position,
+        at: at,
+        seekRequests: 1,
+        capacityBytes: held,
+      );
+    }
+
+    expect(ahead, isNotNull, reason: 'past the cap, the band disappeared');
+    expect(ahead!.inSeconds, lessThanOrEqualTo(held ~/ rate));
+  });
+
+  test('the band holds steady while the demuxer reads in bursts', () {
+    // It reads a cluster at a time, so a second's consumption swings between
+    // 0.3 and 0.42 MB, and the band jumped between 5:24 and 7:40 with it.
+    final estimator = BufferedAheadEstimator();
+    var demux = 0;
+    var position = const Duration(minutes: 2);
+    var at = Duration.zero;
+    final readings = <int>[];
+    for (var i = 0; i < 20; i++) {
+      demux += i.isEven ? 300000 : 420000;
+      position += second;
+      at += second;
+      final ahead = estimator.sample(
+        readBytes: demux + held,
+        demuxReadBytes: demux,
+        position: position,
+        at: at,
+        seekRequests: 0,
+      );
+      if (i >= 10 && ahead != null) readings.add(ahead.inSeconds);
+    }
+
+    expect(readings, hasLength(10));
+    final spread = readings.reduce(math.max) - readings.reduce(math.min);
+    expect(spread, lessThan(30), reason: 'seconds, on about six minutes');
   });
 }

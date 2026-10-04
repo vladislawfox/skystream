@@ -284,6 +284,8 @@
   "liveStreams": "Živé přenosy",
   "debug": "LADĚNÍ",
   "extensionsUpdated": "{count, plural, one{Aktualizováno 1 rozšíření} few{Aktualizována {count} rozšíření} other{Aktualizováno {count} rozšíření}}",
+  "extensionsNewRepositories": "{count, plural, one{Nový repozitář v {source}} few{{count} nové repozitáře v {source}} many{{count} nového repozitáře v {source}} other{{count} nových repozitářů v {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{Nový plugin v {repository}} few{{count} nové pluginy v {repository}} many{{count} nového pluginu v {repository}} other{{count} nových pluginů v {repository}}}",
   "invalidNavigation": "Neplatná navigace.",
   "startOver": "Začít znovu",
   "goBack": "Zpět",

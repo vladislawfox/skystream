@@ -350,6 +350,77 @@ void main() {
       expect(results.map((s) => s.id), ['2', '4', '6']);
     });
 
+    test('opens the season being watched, not the first season listed', () async {
+      // SubSource lists a show once per season, each with its own id.
+      final (dio, adapter) = _dio((request) {
+        if (request.uri.path.endsWith('/movies/search')) {
+          return {
+            'data': [
+              {'movieId': 11, 'title': 'The Show', 'season': 1},
+              {'movieId': 22, 'title': 'The Show', 'season': 2},
+              {'movieId': 33, 'title': 'The Show', 'season': 3},
+            ],
+          };
+        }
+        return {
+          'data': {
+            'results': [
+              {'subtitleId': 1, 'releaseInfo': ['The.Show.S02E05.1080p']},
+            ],
+          },
+        };
+      });
+
+      final results = await SubSourceProvider(
+        dio,
+        apiKey: 'key',
+      ).search(query: 'The Show', imdbId: 'tt0903747', season: 2, episode: 5);
+
+      expect(adapter.requests[1].uri.queryParameters['movieId'], '22');
+      expect(results.map((s) => s.id), ['1']);
+    });
+
+    test('never opens another show\'s season from a text search', () async {
+      // A text search lists other shows too; their season 2 is no answer.
+      final (dio, adapter) = _dio((request) {
+        if (request.uri.path.endsWith('/movies/search')) {
+          return {
+            'data': [
+              {'movieId': 11, 'title': 'The Show', 'season': 1},
+              {'movieId': 44, 'title': 'Another Show', 'season': 2},
+              {'movieId': 22, 'title': 'The Show', 'season': 2},
+            ],
+          };
+        }
+        return {'data': {'results': <Object?>[]}};
+      });
+
+      await SubSourceProvider(
+        dio,
+        apiKey: 'key',
+      ).search(query: 'The Show', season: 2, episode: 5);
+
+      expect(adapter.requests[1].uri.queryParameters['movieId'], '22');
+    });
+
+    test('a film search opens the film, whatever else is listed', () async {
+      final (dio, adapter) = _dio((request) {
+        if (request.uri.path.endsWith('/movies/search')) {
+          return {
+            'data': [
+              {'movieId': 46839, 'title': 'Inception', 'season': null},
+              {'movieId': 143170, 'title': 'Cruel Intentions', 'season': 1},
+            ],
+          };
+        }
+        return {'data': {'results': <Object?>[]}};
+      });
+
+      await SubSourceProvider(dio, apiKey: 'key').search(query: 'Inception');
+
+      expect(adapter.requests[1].uri.queryParameters['movieId'], '46839');
+    });
+
     test('a tmdb-only target is a title search (searchType=text)', () async {
       final (dio, adapter) = _dio(respond);
       await SubSourceProvider(

@@ -284,6 +284,8 @@
   "liveStreams": "লাইভ ষ্ট্ৰীম",
   "debug": "ডিবাগ",
   "extensionsUpdated": "{count, plural, =1{১ টা এক্সটেনচন আপডেট হ'ল} other{{count} টা এক্সটেনচন আপডেট হ'ল}}",
+  "extensionsNewRepositories": "{count, plural, =1{{source}-ত ১ টা নতুন ৰিপোজিটৰী} other{{source}-ত {count} টা নতুন ৰিপোজিটৰী}}",
+  "extensionsNewPlugins": "{count, plural, =1{{repository}-ত ১ টা নতুন প্লাগইন} other{{repository}-ত {count} টা নতুন প্লাগইন}}",
   "invalidNavigation": "অবৈধ নেভিগেশ্যন। অনুগ্ৰহ কৰি পাছলৈ যাওক।",
   "startOver": "পুনৰ আৰম্ভ কৰক",
   "goBack": "পাছলৈ যাওক",

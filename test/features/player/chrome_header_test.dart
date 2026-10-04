@@ -55,6 +55,32 @@ void main() {
     await sendEvent(tester, snapshot(state: 'paused'));
   }, variant: texturePlatform);
 
+  testWidgets('a film filed as a one-episode show is still just its title', (
+    tester,
+  ) async {
+    // Plugins hand a film back as a single episode, and the bar read
+    // "A Film · S1 E1 · Full Movie".
+    final only = ep(1, 1, name: 'Full Movie');
+    await pumpPlayer(
+      tester,
+      item: MultimediaItem(
+        title: 'A Film',
+        url: 'https://example.com/film',
+        posterUrl: '',
+        contentType: MultimediaContentType.movie,
+        episodes: [only],
+        provider: 'Remote',
+      ),
+      episode: only,
+      videoUrl: only.url,
+    );
+    await sendFirstFrame(tester);
+
+    expect(bar(tester).title, 'A Film');
+
+    await sendEvent(tester, snapshot(state: 'paused'));
+  }, variant: texturePlatform);
+
   testWidgets('a series carries its episode in the title', (tester) async {
     final episodes = <Episode>[
       ep(1, 1, name: 'A Fated Meeting'),

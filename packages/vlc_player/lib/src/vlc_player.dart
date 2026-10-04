@@ -10,6 +10,7 @@ import 'vlc_player_controller.dart';
 import 'vlc_player_controller_internals.dart';
 import 'vlc_player_value.dart';
 import 'vlc_video_fit.dart';
+import 'vlc_video_geometry.dart';
 
 const String _viewType = 'plugins.lingjhf.com/vlc_player/view';
 
@@ -73,9 +74,13 @@ class _VlcPlayerState extends State<VlcPlayer> {
   /// the id never comes back here. See [_detachPlayer].
   int? _platformViewId;
 
+  /// This widget's size as last laid out, for [_pushGeometry].
+  Size? _viewSize;
+
   @override
   void initState() {
     super.initState();
+    widget.controller.addListener(_onControllerValue);
     if (_usesTexturePlayer) {
       _textureId = _attachTexturePlayer(widget.controller);
     }
@@ -88,6 +93,14 @@ class _VlcPlayerState extends State<VlcPlayer> {
     // Fit is applied to the running player rather than rebuilding the view.
     if (oldWidget.fit != widget.fit && widget.controller.isAttached) {
       unawaited(widget.controller.setFit(widget.fit));
+    }
+    if (oldWidget.fit != widget.fit ||
+        oldWidget.controller != widget.controller) {
+      if (oldWidget.controller != widget.controller) {
+        oldWidget.controller.removeListener(_onControllerValue);
+        widget.controller.addListener(_onControllerValue);
+      }
+      _pushGeometry();
     }
 
     if (oldWidget.controller == widget.controller) {
@@ -105,6 +118,7 @@ class _VlcPlayerState extends State<VlcPlayer> {
   @override
   void dispose() {
     _isDisposed = true;
+    widget.controller.removeListener(_onControllerValue);
     _textureGeneration++;
     // Named, because this is the call that races: a host that swaps the widget
     // at this slot builds the replacement and attaches its platform view
@@ -127,8 +141,52 @@ class _VlcPlayerState extends State<VlcPlayer> {
     TargetPlatform.fuchsia => false,
   };
 
+  /// Only Original depends on the video's own size; the other fits depend on
+  /// this widget's alone.
+  void _onControllerValue() {
+    if (widget.fit == VlcVideoFit.none) _pushGeometry();
+  }
+
+  /// Whether libVLC shapes the picture to the fit itself: Android's platform
+  /// view, where libvlc-android sizes the surface. Everywhere else the
+  /// picture reaches Flutter whole and Flutter fits it - [_fitTexture] on the
+  /// texture path, the view's content mode on Darwin's platform view - so a
+  /// crop or aspect ratio from libVLC as well would apply the fit twice.
+  bool get _libVlcFits =>
+      defaultTargetPlatform == TargetPlatform.android && !_usesTexturePlayer;
+
+  /// Tells libVLC the crop or aspect ratio this fit needs at this size, so it
+  /// draws subtitles inside the part of the picture on screen rather than in
+  /// the part a zoom cuts off. See [VlcVideoGeometry].
+  void _pushGeometry() {
+    final viewSize = _viewSize;
+    if (_isDisposed || viewSize == null || !_libVlcFits) return;
+    (widget.controller as VlcPlayerControllerInternals).setVideoGeometry(
+      VlcVideoGeometry.forFit(
+        widget.fit,
+        viewSize: viewSize,
+        videoSize: widget.controller.value.videoSize,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final size = constraints.biggest;
+        if (size != _viewSize) {
+          _viewSize = size;
+          // A side effect of the size layout settled on, so it waits for the
+          // frame rather than running inside it.
+          WidgetsBinding.instance.addPostFrameCallback((_) => _pushGeometry());
+        }
+        return _buildPlayer(context);
+      },
+    );
+  }
+
+  Widget _buildPlayer(BuildContext context) {
     // Ahead of every platform-view branch: Android, iOS and macOS can render
     // either way, and this is the choice that decides it.
     if (_usesTexturePlayer) {

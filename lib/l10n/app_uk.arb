@@ -284,6 +284,8 @@
   "liveStreams": "Прямі трансляції",
   "debug": "ВІДЛАДКА",
   "extensionsUpdated": "{count, plural, one{Оновлено 1 розширення} few{Оновлено {count} розширення} other{Оновлено {count} розширень}}",
+  "extensionsNewRepositories": "{count, plural, one{{count} новий репозиторій у {source}} few{{count} нові репозиторії в {source}} many{{count} нових репозиторіїв у {source}} other{{count} нового репозиторію в {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{{count} новий плагін у {repository}} few{{count} нові плагіни в {repository}} many{{count} нових плагінів у {repository}} other{{count} нового плагіна в {repository}}}",
   "invalidNavigation": "Невірна навігація.",
   "startOver": "Почати спочатку",
   "goBack": "Назад",

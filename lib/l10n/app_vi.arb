@@ -284,6 +284,8 @@
   "liveStreams": "Truyền hình trực tiếp",
   "debug": "GỠ LỖI",
   "extensionsUpdated": "{count, plural, other{Đã cập nhật {count} tiện ích mở rộng}}",
+  "extensionsNewRepositories": "{count, plural, other{{count} kho lưu trữ mới trong {source}}}",
+  "extensionsNewPlugins": "{count, plural, other{{count} plugin mới trong {repository}}}",
   "invalidNavigation": "Lối điều hướng không hợp lệ.",
   "startOver": "Bắt đầu lại",
   "goBack": "Quay lại",

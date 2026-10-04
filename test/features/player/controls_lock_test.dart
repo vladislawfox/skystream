@@ -1,3 +1,7 @@
+// A test's ProviderScope is its root scope; the rule only recognises one
+// passed to runApp.
+// ignore_for_file: riverpod_lint/scoped_providers_should_specify_dependencies
+
 /// The screen lock, phone and tablet only.
 ///
 /// A pocket, a lap or a child fires the same five screen-wide gestures a
@@ -339,9 +343,10 @@ void main() {
       await _doubleTapAt(tester, right);
       expect(_seeks(engine), isNotEmpty, reason: 'the double-tap seek works');
 
+      // So soon after the double-tap, the scrub's seek is merged with it and
+      // reaches the engine once the seeks stop - read at the end.
       await tester.dragFrom(centre, const Offset(300, 0));
       await tester.pump(const Duration(milliseconds: 50));
-      expect(_seeks(engine), hasLength(greaterThan(1)));
 
       await tester.dragFrom(right, const Offset(0, -100));
       await tester.pump(const Duration(milliseconds: 50));
@@ -352,6 +357,8 @@ void main() {
       expect(engine.callsTo('setPlaybackSpeed'), isNotEmpty);
 
       expect(find.byType(PlayerCenterPlayButton), findsOneWidget);
+      await tester.pump(VlcPlayerController.seekMergeWindow);
+      expect(_seeks(engine), hasLength(greaterThan(1)), reason: 'the scrub');
       await _snapshot(tester, state: 'paused', position: 5000);
     });
 

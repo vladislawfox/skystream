@@ -192,7 +192,136 @@ Covered by `test/vlc_http_headers_test.dart` and two channel-boundary tests in
 `vlc_player_controller_test.dart` that assert the emitted option strings and that nothing containing
 `http-header` is ever produced.
 
+### 9. Android: HLS and MPEG-TS report a video size
+
+On Android, `videoSize`, `videoOrientation` and so `displayVideoSize` stayed null for the whole of
+every MPEG-TS and HLS stream, so a host that turns the device to match the video never turned it for
+most anime and live sources. MP4 and MKV were fine.
+
+The size is read from `MediaPlayer.currentVideoTrack`, which returns the first video entry of
+libvlc-android's `Media` track array. `Media.getTracks()` caches that array on first read, and only
+`postParse()` - a `ParsedChanged` event, which playback never raises - clears it (read from the
+`libvlc-all:3.7.0` bytecode). A TS video track exists before the decoder has parsed a frame, so the
+first read cached it at 0x0 for the life of the media, although libVLC's own track info filled in a
+moment later. MP4 and MKV declare their size in the container, so their first read was already right.
+
+`VlcPlayerPlatformView.sizedVideoTrack()` now clears the cached array through reflection on the
+private `Media.mNativeTracks` field whenever the cached track is unsized, and reads again. The
+reflection is guarded and falls back to the old behaviour where the field does not exist. The same
+fix corrects the video dimensions `getMediaInfo()` returns for these streams.
+
+Covered by `example/integration_test/video_shape_test.dart`, which plays the MP4, MKV, MPEG-TS and
+HLS fixtures and requires a landscape `displayVideoSize` from each. On an Android 17 emulator it
+failed for MPEG-TS and HLS before the change and passes for all four after it.
+
+### 10. Android: leaving a stalled stream no longer freezes the app
+
+Switching source, or disposing the player, on a live stream whose download had stalled froze the
+whole app until Android killed it as not responding. SkyStream's ANR report had the main thread 15 s
+deep in `VlcPlayerPlatformView.dispose` -> `MediaPlayer.stop` -> `libvlc_media_player_stop` ->
+`input_Close` -> `vlc_join`.
+
+libVLC 3 leaves a stream synchronously. `libvlc_media_player_set_media` and `_stop` both stop the
+input thread and wait for it to exit, holding the player's input lock throughout (VLC 3.0
+`lib/media_player.c`), and every read of the player - time, length, tracks - takes that lock too.
+A stalled segment read keeps the input thread alive for as long as it lasts. The plugin made these
+calls on the Android main thread, which Flutter's UI thread is merged into, so moving `set_media`
+alone to a worker would not have helped: the next snapshot read would have blocked on the lock.
+
+So a player that has had a source is not handed another. `setSource` and `stop` swap in a fresh
+`MediaPlayer` on the same `LibVLC` instance, move the views to it on the main thread, carry over the
+per-player settings (volume, rate), and stop and release the old one on a background thread;
+`dispose` detaches the views on the main thread and does everything that waits on libVLC off it,
+in the order it always had. Events and vout callbacks from a replaced player are dropped by identity,
+since libVLC delivers them as runnables that can still arrive after the swap. `stop` reloads the same
+source onto the fresh player, so `play()` after `stop()` still replays it.
+
+Covered by `example/integration_test/stalled_stream_teardown_test.dart`, which serves a live HLS
+playlist whose segment stalls (from its own isolate, which a frozen main thread cannot stop) and
+times switching away and leaving. On an Android 17 emulator both took 21.7 s before the change, and
+both finish in under two seconds after it, with the new source playing.
+
+### 11. New: `setDurationCap`, for HLS lengths libVLC overstates
+
+libVLC reports an HLS master's length as that of the longest playlist it has loaded, alternative
+renditions included, and it loads a rendition's playlist whether or not it is selected
+(`modules/demux/hls/playlist/Parser.cpp`: every `EXT-X-MEDIA` with a `URI` becomes a representation,
+and `parseSegments` raises the playlist's duration to each one's total). NetMirror wraps each
+subtitle file as a playlist of one segment claiming 99,999 seconds, so its episodes read 27:46:39
+on every platform. The seek bar was useless, and a host that judges an ending by position against
+length saw every real ending as a stream dying short.
+
+libVLC has no option to leave renditions out of the length, and the engine exposes no per-rendition
+length to read instead. So the controller takes one from the host: `setDurationCap(Duration?)`
+publishes the smaller of libVLC's report and the cap from then on, until the next media. It only
+ever shortens, leaves an unknown length unknown, and is applied in Dart, so every backend gets it.
+SkyStream measures the video's own playlist and passes that.
+
+Covered by `test/vlc_duration_cap_test.dart`, and on a real engine by
+`example/integration_test/hls_rendition_length_test.dart`, which serves a 20 s stream with and
+without a 99,999 s subtitle rendition. On an Android 17 emulator libVLC reports 0:00:20 and
+27:46:39, and the capped controller holds 0:00:20 while the engine goes on reporting 27:46:39.
+
+### 12. Android: the fit reaches libVLC as a crop or an aspect ratio
+
+On Android's platform view the fit was libvlc-android's `VideoHelper.setVideoScale`, which resizes
+the view from a size report only its opaque `android_display` output sends. Hardware-decoded video
+runs on the `gles2` output instead - `android_display` will not open on an opaque MediaCodec surface
+with no subtitle surface to blend into - so Stretch and Zoom did nothing to it at all.
+
+The widget now works out what its fit needs at its own size - `VlcVideoGeometry` (internal): Stretch
+is an aspect ratio of the view's shape, Zoom a crop to it, Original a pixel region - and the
+controller sends it with `setVideoGeometry`. Android applies the aspect ratio through
+`MediaPlayer.setAspectRatio`, which `gles2` honours, subtitles included. libvlc-android 3.x has no
+Java crop, so `src/main/cpp/vlc_player_geometry.c` - a JNI shim built with the NDK the host pins -
+resolves `libvlc_video_set_crop_geometry` from the `libvlc.so` the AAR has already loaded and calls
+it with the player's native pointer (`VLCObject.getInstance()` is the `libvlc_media_player_t*`
+itself). `gles2` applies a crop in the core but does not draw it, so Zoom on hardware-decoded video
+still shows the whole picture; what it no longer does is cut the subtitles off.
+
+Only Android's platform view is told: every other renderer hands Flutter a whole picture to fit, and
+a crop from libVLC as well would apply the fit twice. Covered by `test/vlc_video_geometry_test.dart`
+and `test/vlc_video_geometry_widget_test.dart`.
+
+### 13. Darwin: subtitles inside the video show under VideoToolbox
+
+Every subtitle track inside a video vanished on the texture renderer whenever VideoToolbox decoded
+it - which on Darwin is always. vmem cannot draw subpictures, so libVLC 3 blends them into the
+picture, and when the output buffer is no bigger than the decoder's picture it blends EARLY, into the
+decoder's own format (`src/video_output/video_output.c`, `ThreadDisplayRenderPicture`). A
+VideoToolbox picture is an opaque `CVPixelBuffer` the blender cannot write, so the blend failed and
+the subtitle was dropped. A filter in the chain cannot help: the chain converts back to the decoder's
+format at its end.
+
+`VlcTextureRenderer.mm` now asks for a buffer two rows taller than a VideoToolbox picture
+(`kSubtitleRows`). That moves the blend LATE, onto the converted picture in our NV12, which it can
+write. libVLC scales the picture to the buffer on the way - on macOS on the GPU, through
+`VTPixelTransferSession` (`modules/video_chroma/cvpx.c`, CVPX to CVPX), and on iOS, whose
+MobileVLCKit has no such converter, with swscale, set to fast bilinear for the texture player
+(`--swscale-mode=0`, present in MobileVLCKit 3.7.3). The whole buffer is then picture, so the sink
+reports no coded size and Flutter shows all of it at the picture's own size, squeezing the two rows
+back out. Software-decoded pictures blend fine early and are left exactly as they were.
+
+Checked on macOS with an MKV carrying a subtitle track: nothing drawn before, the line drawn after,
+picture unchanged.
+
 ---
+
+### 14. New: `pendingSeekTarget`, the seek on its way
+
+libVLC reports the position it left while a seek repositions the demuxer and refills the buffer -
+seconds, on a slow network file - so a scrubber drawn from `VlcPlayerValue.position` sprang back to
+where the viewer had been and jumped forward once the stream caught up. Media3 masks a seek's
+position the moment it is asked for, and browsers move a media element's `currentTime` at the same
+moment.
+
+`VlcPlayerController.pendingSeekTarget` publishes the target from `seekTo` until the engine's
+published position arrives at it (a little short counts: seeks land on a keyframe or a segment
+boundary) or goes past it in the seek's direction; until the engine can no longer get there
+(stopped, ended, failed, new media); or until playback carries on elsewhere for a dozen reports in a
+row, which is an engine that ignored the seek. `VlcPlayerValue.position` stays the engine's own, so a
+resume point or a relative step never counts from a place playback did not reach; hosts show the
+target in their scrubber and clock. Covered by `test/vlc_player_seek_position_test.dart`.
 
 ## Known gaps, not yet addressed
 

@@ -284,6 +284,8 @@
   "liveStreams": "ライブ配信",
   "debug": "デバッグ",
   "extensionsUpdated": "{count, plural, other{{count} 個の拡張機能を更新しました}}",
+  "extensionsNewRepositories": "{count, plural, other{{source} に新しいリポジトリが {count} 件}}",
+  "extensionsNewPlugins": "{count, plural, other{{repository} に新しいプラグインが {count} 件}}",
   "invalidNavigation": "無効なナビゲーションです。戻ってください。",
   "startOver": "最初からやり直す",
   "goBack": "戻る",

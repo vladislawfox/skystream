@@ -26,7 +26,9 @@ class AppUtils {
       return;
     }
 
-    // Phase 1: clear the entire widget tree.
+    // Phase 1: clear the entire widget tree. Scope and all, on purpose: [fn]
+    // mounts AppRoot, and the ProviderScope with it, again.
+    // ignore: riverpod_lint/missing_provider_scope
     runApp(const SizedBox.shrink());
 
     // Phase 2: wait for the disposal frame to complete, then rebuild.

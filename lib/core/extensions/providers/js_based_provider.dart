@@ -760,174 +760,13 @@ class JsBasedProvider extends SkyStreamProvider {
             e,
           ) async {
             final map = Map<String, dynamic>.from(e as Map);
-            String finalUrl = map['url'] as String;
-
-            if (finalUrl.startsWith("magic_m3u8:")) {
-              try {
-                final base64Content = finalUrl.substring("magic_m3u8:".length);
-                final m3u8Content = await compute(
-                  _processMagicM3u8,
-                  base64Content,
-                );
-                finalUrl = LocalProxyService.instance.serveM3u8(m3u8Content);
-              } catch (err) {
-                if (kDebugMode) debugPrint("Magic M3U8 Error: $err");
-              }
-            }
-            // A MAGIC_PROXY url goes through the local proxy, which injects
-            // the headers HLS segment requests need.
-            else if (finalUrl.startsWith("MAGIC_PROXY_v1") ||
-                finalUrl.startsWith("MAGIC_PROXY:")) {
-              try {
-                final bool isV1 = finalUrl.startsWith("MAGIC_PROXY_v1");
-                final b64Url = finalUrl.substring(
-                  isV1 ? "MAGIC_PROXY_v1".length : "MAGIC_PROXY:".length,
-                );
-                final realUrlBytes = base64Decode(b64Url);
-                final realUrl = utf8.decode(realUrlBytes);
-
-                Map<String, String>? sticky = map['headers'] != null
-                    ? Map<String, String>.from(map['headers'] as Map)
-                    : null;
-
-                if (mainUrl.isNotEmpty) {
-                  try {
-                    final baseUri = Uri.parse(mainUrl);
-                    final jarCookies = await _jsEngine.getCookiesForUri(
-                      baseUri,
-                    );
-                    if (jarCookies.isNotEmpty) {
-                      final cookieHeader = jarCookies
-                          .map((c) => '${c.name}=${c.value}')
-                          .join('; ');
-                      sticky ??= <String, String>{};
-                      String? existingKey;
-                      sticky.forEach((k, v) {
-                        if (k.toLowerCase() == 'cookie') existingKey = k;
-                      });
-                      final existingCookie = existingKey != null
-                          ? sticky[existingKey]
-                          : null;
-                      if (existingCookie != null && existingCookie.isNotEmpty) {
-                        final Map<String, String> merged = {};
-                        for (final pair in existingCookie.split(';')) {
-                          final parts = pair.split('=');
-                          if (parts.length >= 2) {
-                            merged[parts[0].trim()] = parts
-                                .sublist(1)
-                                .join('=')
-                                .trim();
-                          }
-                        }
-                        for (final c in jarCookies) {
-                          merged[c.name] = c.value;
-                        }
-                        sticky[existingKey!] = merged.entries
-                            .map((e) => '${e.key}=${e.value}')
-                            .join('; ');
-                      } else {
-                        sticky['Cookie'] = cookieHeader;
-                      }
-                    }
-                  } catch (e) {
-                    if (kDebugMode) {
-                      debugPrint(
-                        "Failed to copy cookies from JS engine jar to proxy headers: $e",
-                      );
-                    }
-                  }
-                }
-
-                finalUrl = LocalProxyService.instance.getProxyUrl(
-                  realUrl,
-                  headers: sticky,
-                );
-              } catch (e) {
-                if (kDebugMode) {
-                  debugPrint("Error decoding MAGIC_PROXY_v1 url: $e");
-                }
-              }
-            } else if (finalUrl.startsWith("MAGIC_PROXY_v2")) {
-              try {
-                final b64Json = finalUrl.substring("MAGIC_PROXY_v2".length);
-                final jsonBytes = base64Decode(b64Json);
-                final decodedJson = utf8.decode(jsonBytes);
-                final Map<String, dynamic> config =
-                    jsonDecode(decodedJson) as Map<String, dynamic>;
-
-                final String realUrl = config['url'] as String;
-                Map<String, String>? sticky = config['headers'] != null
-                    ? Map<String, String>.from(config['headers'] as Map)
-                    : (map['headers'] != null
-                          ? Map<String, String>.from(map['headers'] as Map)
-                          : null);
-
-                if (mainUrl.isNotEmpty) {
-                  try {
-                    final baseUri = Uri.parse(mainUrl);
-                    final jarCookies = await _jsEngine.getCookiesForUri(
-                      baseUri,
-                    );
-                    if (jarCookies.isNotEmpty) {
-                      final cookieHeader = jarCookies
-                          .map((c) => '${c.name}=${c.value}')
-                          .join('; ');
-                      sticky ??= <String, String>{};
-                      String? existingKey;
-                      sticky.forEach((k, v) {
-                        if (k.toLowerCase() == 'cookie') existingKey = k;
-                      });
-                      final existingCookie = existingKey != null
-                          ? sticky[existingKey]
-                          : null;
-                      if (existingCookie != null && existingCookie.isNotEmpty) {
-                        final Map<String, String> merged = {};
-                        for (final pair in existingCookie.split(';')) {
-                          final parts = pair.split('=');
-                          if (parts.length >= 2) {
-                            merged[parts[0].trim()] = parts
-                                .sublist(1)
-                                .join('=')
-                                .trim();
-                          }
-                        }
-                        for (final c in jarCookies) {
-                          merged[c.name] = c.value;
-                        }
-                        sticky[existingKey!] = merged.entries
-                            .map((e) => '${e.key}=${e.value}')
-                            .join('; ');
-                      } else {
-                        sticky['Cookie'] = cookieHeader;
-                      }
-                    }
-                  } catch (e) {
-                    if (kDebugMode) {
-                      debugPrint(
-                        "Failed to copy cookies from JS engine jar to proxy headers: $e",
-                      );
-                    }
-                  }
-                }
-
-                ProxyOptions? options;
-                if (config['options'] != null) {
-                  options = ProxyOptions.fromJson(
-                    config['options'] as Map<String, dynamic>,
-                  );
-                }
-
-                finalUrl = LocalProxyService.instance.getProxyUrl(
-                  realUrl,
-                  headers: sticky,
-                  options: options,
-                );
-              } catch (e) {
-                if (kDebugMode) {
-                  debugPrint("Error decoding MAGIC_PROXY_v2 url: $e");
-                }
-              }
-            }
+            final entryHeaders = map['headers'] != null
+                ? Map<String, String>.from(map['headers'] as Map)
+                : null;
+            final finalUrl = await _resolveMagicUrl(
+              map['url'] as String,
+              entryHeaders,
+            );
 
             return StreamResult(
               url: finalUrl,
@@ -936,13 +775,7 @@ class JsBasedProvider extends SkyStreamProvider {
                   ? Map<String, String>.from(map['headers'] as Map)
                   : null,
               subtitles: map['subtitles'] != null
-                  ? (map['subtitles'] as List)
-                        .map(
-                          (s) => SubtitleFile.fromJson(
-                            Map<String, dynamic>.from(s as Map),
-                          ),
-                        )
-                        .toList()
+                  ? await _subtitleFiles(map['subtitles'] as List, entryHeaders)
                   : null,
               drmKid: map['drmKid'] as String?,
               drmKey: map['drmKey'] as String?,
@@ -961,6 +794,151 @@ class JsBasedProvider extends SkyStreamProvider {
         return <StreamResult>[];
       }
     });
+  }
+
+  /// Turns a plugin's special addresses into ones the player can open, for a
+  /// stream and its subtitles alike: `magic_m3u8:` inline playlists are served
+  /// by the local proxy, and `MAGIC_PROXY` addresses go through it with the
+  /// headers they need - [headers], the entry's own, unless a v2 address names
+  /// its own - plus the cookies the plugin's requests have collected. Any
+  /// other address, and one that will not decode, is returned as given.
+  Future<String> _resolveMagicUrl(
+    String url,
+    Map<String, String>? headers,
+  ) async {
+    if (url.startsWith("magic_m3u8:")) {
+      try {
+        final base64Content = url.substring("magic_m3u8:".length);
+        final m3u8Content = await compute(_processMagicM3u8, base64Content);
+        return LocalProxyService.instance.serveM3u8(m3u8Content);
+      } catch (err) {
+        if (kDebugMode) debugPrint("Magic M3U8 Error: $err");
+        return url;
+      }
+    }
+    // A MAGIC_PROXY url goes through the local proxy, which injects the
+    // headers HLS segment requests need.
+    if (url.startsWith("MAGIC_PROXY_v1") || url.startsWith("MAGIC_PROXY:")) {
+      try {
+        final bool isV1 = url.startsWith("MAGIC_PROXY_v1");
+        final b64Url = url.substring(
+          isV1 ? "MAGIC_PROXY_v1".length : "MAGIC_PROXY:".length,
+        );
+        final realUrl = utf8.decode(base64Decode(b64Url));
+        final sticky = await _withJarCookies(
+          headers == null ? null : Map<String, String>.of(headers),
+        );
+        return LocalProxyService.instance.getProxyUrl(realUrl, headers: sticky);
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint("Error decoding MAGIC_PROXY_v1 url: $e");
+        }
+        return url;
+      }
+    }
+    if (url.startsWith("MAGIC_PROXY_v2")) {
+      try {
+        final b64Json = url.substring("MAGIC_PROXY_v2".length);
+        final Map<String, dynamic> config = jsonDecode(
+          utf8.decode(base64Decode(b64Json)),
+        ) as Map<String, dynamic>;
+
+        final String realUrl = config['url'] as String;
+        final sticky = await _withJarCookies(
+          config['headers'] != null
+              ? Map<String, String>.from(config['headers'] as Map)
+              : (headers == null ? null : Map<String, String>.of(headers)),
+        );
+
+        ProxyOptions? options;
+        if (config['options'] != null) {
+          options = ProxyOptions.fromJson(
+            config['options'] as Map<String, dynamic>,
+          );
+        }
+
+        return LocalProxyService.instance.getProxyUrl(
+          realUrl,
+          headers: sticky,
+          options: options,
+        );
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint("Error decoding MAGIC_PROXY_v2 url: $e");
+        }
+        return url;
+      }
+    }
+    return url;
+  }
+
+  /// [sticky] with the cookies the JS engine's jar holds for [mainUrl] merged
+  /// into its Cookie header - the jar's value winning for a cookie both have.
+  Future<Map<String, String>?> _withJarCookies(
+    Map<String, String>? sticky,
+  ) async {
+    if (mainUrl.isEmpty) return sticky;
+    try {
+      final baseUri = Uri.parse(mainUrl);
+      final jarCookies = await _jsEngine.getCookiesForUri(baseUri);
+      if (jarCookies.isEmpty) return sticky;
+      final cookieHeader = jarCookies
+          .map((c) => '${c.name}=${c.value}')
+          .join('; ');
+      final merged = sticky ?? <String, String>{};
+      String? existingKey;
+      merged.forEach((k, v) {
+        if (k.toLowerCase() == 'cookie') existingKey = k;
+      });
+      final existingCookie = existingKey != null ? merged[existingKey] : null;
+      if (existingCookie != null && existingCookie.isNotEmpty) {
+        final Map<String, String> cookies = {};
+        for (final pair in existingCookie.split(';')) {
+          final parts = pair.split('=');
+          if (parts.length >= 2) {
+            cookies[parts[0].trim()] = parts.sublist(1).join('=').trim();
+          }
+        }
+        for (final c in jarCookies) {
+          cookies[c.name] = c.value;
+        }
+        merged[existingKey!] = cookies.entries
+            .map((e) => '${e.key}=${e.value}')
+            .join('; ');
+      } else {
+        merged['Cookie'] = cookieHeader;
+      }
+      return merged;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint(
+          "Failed to copy cookies from JS engine jar to proxy headers: $e",
+        );
+      }
+      return sticky;
+    }
+  }
+
+  /// A stream's subtitles, each address resolved like the stream's own - a
+  /// plugin that proxies its video usually proxies its subtitles too, and an
+  /// unresolved MAGIC_PROXY address is no address at all to the player.
+  Future<List<SubtitleFile>> _subtitleFiles(
+    List<dynamic> raw,
+    Map<String, String>? headers,
+  ) async {
+    final files = <SubtitleFile>[];
+    for (final entry in raw) {
+      final file = SubtitleFile.fromJson(
+        Map<String, dynamic>.from(entry as Map),
+      );
+      final url = await _resolveMagicUrl(file.url, headers);
+      files.add(
+        url == file.url
+            ? file
+            : SubtitleFile(url: url, label: file.label, lang: file.lang),
+      );
+    }
+    return files;
   }
 }
 

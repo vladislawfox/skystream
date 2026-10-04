@@ -1,3 +1,7 @@
+// A test's ProviderScope is its root scope; the rule only recognises one
+// passed to runApp.
+// ignore_for_file: riverpod_lint/scoped_providers_should_specify_dependencies
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:skystream/shared/focus/app_focus.dart';
@@ -158,7 +162,55 @@ void main() {
   );
 
   group('plugin row focus affordance', _focusAffordanceTests);
+  group('under a thumb or a mouse', _touchTests);
   group('TV dead ends', _tvDeadEndTests);
+}
+
+// ---------------------------------------------------------------------------
+// Under a thumb or a mouse: focus moves, and nothing may show it.
+// ---------------------------------------------------------------------------
+
+void _touchTests() {
+  testWidgets('a repository card never lights up for focus a tap or the code '
+      'put there', (WidgetTester tester) async {
+    // The report: rings round the repositories at random on a phone and a
+    // Mac, used with nothing but a finger and a mouse. Focus does land on the
+    // cards under a pointer - a header tapped to expand it, a node focused by
+    // code written for the remote - and the card lit up for any of it.
+    await tester.pumpWidget(_app(_oneRepository(), visibility: true));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Repositories'));
+    await tester.pumpAndSettle();
+    final theme = Theme.of(tester.element(find.text('Test Repo')));
+
+    await tester.tap(find.text('Test Repo'));
+    await tester.pumpAndSettle();
+    await _focusOn(tester, find.text('Test Repo'));
+
+    final card = _cardDecoration(
+      tester,
+      find.text('Test Repo'),
+      theme.colorScheme.surface,
+    );
+    expect(
+      (card.border! as Border).top.color,
+      isNot(theme.colorScheme.primary),
+    );
+    expect((card.border! as Border).top.width, 1.0);
+    expect(card.boxShadow, isNull);
+
+    // A row inside, focused the same way, draws nothing either.
+    final rowB = find.ancestor(
+      of: find.text('Plugin B'),
+      matching: find.byType(ListTile),
+    );
+    await _focusOn(
+      tester,
+      find.descendant(of: rowB, matching: find.byIcon(Icons.download)),
+    );
+    expect(_rowLayers(tester, find.text('Plugin B')).ring, isNull);
+    expect(_rowLayers(tester, find.text('Plugin B')).glow, isNull);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -264,18 +316,48 @@ ExtensionsSuccess _twoInstalled() => ExtensionsSuccess(
   installingPlugins: const {},
 );
 
-Widget _app(ExtensionsState state) => ProviderScope(
+/// The screen under a provider scope. [visibility] installs the app's own
+/// input-aware focus rule over it, the way the app's root does, for the tests
+/// that are about which input is driving.
+Widget _app(ExtensionsState state, {bool visibility = false}) => ProviderScope(
   overrides: [
     extensionsControllerProvider.overrideWith(
       () => MockExtensionsController(state),
     ),
     extensionManagerProvider.overrideWith(() => MockExtensionManager()),
   ],
-  child: const MaterialApp(
+  child: MaterialApp(
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
-    home: ExtensionsScreen(),
+    home: visibility
+        ? const FocusVisibilityScope(child: ExtensionsScreen())
+        : const ExtensionsScreen(),
   ),
+);
+
+/// One repository, with one plugin to install from it.
+ExtensionsSuccess _oneRepository() => ExtensionsSuccess(
+  repositories: [
+    ExtensionRepository(
+      name: 'Test Repo',
+      url: 'https://example.com/repo.json',
+      pluginLists: const [],
+    ),
+  ],
+  installedPlugins: const [],
+  availablePlugins: {
+    'https://example.com/repo.json': [
+      ExtensionPlugin(
+        name: 'Plugin B',
+        version: 1,
+        packageName: 'com.example.b',
+        repositoryId: 'test_repo',
+        sourceUrl: 'https://example.com/b.js',
+      ),
+    ],
+  },
+  availableUpdates: const {},
+  installingPlugins: const {},
 );
 
 void _focusAffordanceTests() {

@@ -15,6 +15,9 @@ environment:
   flutter: '>=3.3.0'
 
 dependencies:
+  # The seek-merge window reads the time through `clock`, which fake time
+  # controls in tests; already in the app's graph through flutter_test.
+  clock: ^1.1.1
   flutter:
     sdk: flutter
 

@@ -39,7 +39,10 @@ class NuvioDom {
 
     final Iterable<dom.Element> found;
     try {
-      found = root == null
+      final stepped = _SteppedSelector.parse(selector);
+      found = stepped != null
+          ? _querySteps(doc, root, stepped)
+          : root == null
           ? doc.document.querySelectorAll(selector)
           : root.querySelectorAll(selector);
     } catch (_) {
@@ -49,6 +52,99 @@ class NuvioDom {
     return [for (final element in found) doc.register(element)];
   }
 
+  /// A selector matched step by step, as cheerio and Jsoup match it:
+  /// package:html matches each step's compound on its own, the text a
+  /// `:contains(...)` names narrows it, and the combinators are walked over
+  /// whole sets, so no step settles for the nearest element that fits it.
+  ///
+  /// Under a context, as in cheerio's `find`, the context itself may take the
+  /// first step but only elements inside it are found. Results come back once
+  /// each, in document order.
+  List<dom.Element> _querySteps(
+    _Doc doc,
+    dom.Element? root,
+    _SteppedSelector selector,
+  ) {
+    final found = Set<dom.Element>.identity();
+    for (final steps in selector.alternatives) {
+      final first = steps.first;
+      var current = <dom.Element>[
+        if (root != null &&
+            _matching(doc, first.css).contains(root) &&
+            first.accepts(root))
+          root,
+        for (final element
+            in root == null
+                ? doc.document.querySelectorAll(first.css)
+                : root.querySelectorAll(first.css))
+          if (first.accepts(element)) element,
+      ];
+      for (final step in steps.skip(1)) {
+        current = _follow(doc, current, step);
+      }
+      found.addAll(current);
+    }
+    if (root != null) found.removeWhere((element) => !_inside(element, root));
+    final order = doc.documentOrder();
+    return found.toList()
+      ..sort((a, b) => (order[a] ?? 0).compareTo(order[b] ?? 0));
+  }
+
+  /// The elements [step] reaches from [current] through its combinator.
+  List<dom.Element> _follow(_Doc doc, List<dom.Element> current, _Step step) {
+    final matched = _matching(doc, step.css);
+    bool fits(dom.Element element) =>
+        matched.contains(element) && step.accepts(element);
+    final from = Set<dom.Element>.identity()..addAll(current);
+    final next = <dom.Element>[];
+    final seen = Set<dom.Element>.identity();
+    void add(dom.Element element) {
+      if (seen.add(element)) next.add(element);
+    }
+
+    switch (step.combinator) {
+      case '>':
+        for (final element in current) {
+          for (final child in element.children) {
+            if (fits(child)) add(child);
+          }
+        }
+      case '+':
+        for (final element in current) {
+          final sibling = _sibling(element, forward: true);
+          if (sibling != null && fits(sibling)) add(sibling);
+        }
+      case '~':
+        for (final element in current) {
+          var sibling = _sibling(element, forward: true);
+          // A later sibling that is itself in the set walks the rest.
+          while (sibling != null && !from.contains(sibling)) {
+            if (fits(sibling)) add(sibling);
+            sibling = _sibling(sibling, forward: true);
+          }
+          if (sibling != null && fits(sibling)) add(sibling);
+        }
+      default:
+        for (final element in matched) {
+          if (!step.accepts(element)) continue;
+          for (var up = element.parent; up != null; up = up.parent) {
+            if (from.contains(up)) {
+              add(element);
+              break;
+            }
+          }
+        }
+    }
+    return next;
+  }
+
+  static bool _inside(dom.Element element, dom.Element root) {
+    for (var up = element.parent; up != null; up = up.parent) {
+      if (identical(up, root)) return true;
+    }
+    return false;
+  }
+
   /// package:html has no `Element.matches`, so "does this node match?" is
   /// answered by matching the selector once per document and testing identity.
   Set<dom.Element> _matching(_Doc doc, String selector) {
@@ -56,8 +152,13 @@ class NuvioDom {
     if (cached != null) return cached;
     Set<dom.Element> matched;
     try {
+      final stepped = _SteppedSelector.parse(selector);
       matched = Set<dom.Element>.identity()
-        ..addAll(doc.document.querySelectorAll(selector));
+        ..addAll(
+          stepped != null
+              ? _querySteps(doc, null, stepped)
+              : doc.document.querySelectorAll(selector),
+        );
     } catch (_) {
       matched = Set<dom.Element>.identity();
     }
@@ -200,6 +301,13 @@ class NuvioDom {
     return doc.nodes[nodeId]?.innerHtml ?? '';
   }
 
+  /// Tag names of [nodeIds], lower-case, as cheerio's nodes carry them.
+  List<String> tagsOf(String docId, List<String> nodeIds) {
+    final doc = _docs[docId];
+    if (doc == null) return const [];
+    return [for (final id in nodeIds) doc.nodes[id]?.localName ?? ''];
+  }
+
   /// Everything the JS side needs about a batch of nodes in one call: cuts the
   /// bridge chatter that would otherwise dominate a big page.
   String describeBatch(String docId, List<String> nodeIds) {
@@ -230,6 +338,20 @@ class _Doc {
   final Map<String, Set<dom.Element>> matchCache = {};
   final Map<dom.Element, String> _ids = {};
   int _seq = 0;
+  Map<dom.Element, int>? _order;
+
+  /// Each element's position in the document, for putting a merged match set
+  /// back in order.
+  Map<dom.Element, int> documentOrder() {
+    final cached = _order;
+    if (cached != null) return cached;
+    final order = Map<dom.Element, int>.identity();
+    var index = 0;
+    for (final element in document.querySelectorAll('*')) {
+      order[element] = index++;
+    }
+    return _order = order;
+  }
 
   String register(dom.Element element) {
     final existing = _ids[element];
@@ -239,4 +361,195 @@ class _Doc {
     _ids[element] = id;
     return id;
   }
+}
+
+/// A selector package:html cannot be left to match on its own.
+///
+/// package:html matches right to left and settles each descendant or `~` step
+/// on the nearest element that fits it, never trying one further out: HDHub4u's
+/// `.page-body > div a` missed every link whose nearest div was not the one
+/// under `.page-body`. So any selector with a combinator is split into its
+/// compound steps, which package:html does match correctly.
+///
+/// So is one with jQuery's `:contains(text)`, which cheerio accepts, and so
+/// does the Nuvio app's Jsoup that the scrapers are tested against, while
+/// package:html rejects the whole selector. It is read as Jsoup reads it:
+/// case-insensitive, whitespace collapsed, over the element's own text and its
+/// descendants'. The argument may be in double or single quotes or bare -
+/// `script:contains(?go=)` is.
+class _SteppedSelector {
+  _SteppedSelector(this.alternatives);
+
+  /// `a, b` is two alternatives; each is its steps, joined by combinators.
+  final List<List<_Step>> alternatives;
+
+  static const String _marker = ':contains(';
+
+  /// Null for a selector package:html matches correctly as it is: compounds
+  /// alone, without `:contains`.
+  static _SteppedSelector? parse(String selector) {
+    final alternatives = <List<_Step>>[];
+    for (final part in _split(selector)) {
+      final steps = _steps(part);
+      if (steps.isEmpty) return null;
+      alternatives.add(steps);
+    }
+    final stepped =
+        selector.contains(_marker) ||
+        alternatives.any((steps) => steps.length > 1);
+    return stepped ? _SteppedSelector(alternatives) : null;
+  }
+
+  /// [selector]'s comma-separated alternatives, ignoring commas in quotes,
+  /// brackets and parentheses.
+  static List<String> _split(String selector) {
+    final parts = <String>[];
+    final buffer = StringBuffer();
+    var depth = 0;
+    String? quote;
+    for (var i = 0; i < selector.length; i++) {
+      final c = selector[i];
+      if (quote != null) {
+        buffer.write(c);
+        if (c == quote) quote = null;
+        continue;
+      }
+      if (c == '"' || c == "'") {
+        quote = c;
+      } else if (c == '(' || c == '[') {
+        depth++;
+      } else if (c == ')' || c == ']') {
+        depth--;
+      } else if (c == ',' && depth == 0) {
+        parts.add(buffer.toString().trim());
+        buffer.clear();
+        continue;
+      }
+      buffer.write(c);
+    }
+    parts.add(buffer.toString().trim());
+    return [
+      for (final part in parts)
+        if (part.isNotEmpty) part,
+    ];
+  }
+
+  /// One alternative's compound selectors and the combinators between them.
+  static List<_Step> _steps(String selector) {
+    final steps = <_Step>[];
+    final buffer = StringBuffer();
+    var depth = 0;
+    String? quote;
+    var combinator = '';
+    var pending = '';
+
+    void flush() {
+      if (buffer.isEmpty) return;
+      steps.add(_Step.of(combinator, buffer.toString()));
+      buffer.clear();
+      combinator = '';
+    }
+
+    for (var i = 0; i < selector.length; i++) {
+      final c = selector[i];
+      if (quote != null) {
+        buffer.write(c);
+        if (c == quote) quote = null;
+        continue;
+      }
+      if (depth == 0 && (c == '>' || c == '+' || c == '~')) {
+        flush();
+        pending = c;
+        continue;
+      }
+      if (depth == 0 && c.trim().isEmpty) {
+        if (buffer.isNotEmpty) {
+          flush();
+          if (pending.isEmpty) pending = ' ';
+        }
+        continue;
+      }
+      if (buffer.isEmpty && steps.isNotEmpty) {
+        combinator = pending.isEmpty ? ' ' : pending;
+      }
+      pending = '';
+      if (c == '"' || c == "'") {
+        quote = c;
+      } else if (c == '(' || c == '[') {
+        depth++;
+      } else if (c == ')' || c == ']') {
+        depth--;
+      }
+      buffer.write(c);
+    }
+    flush();
+    return steps;
+  }
+}
+
+class _Step {
+  _Step(this.combinator, this.css, this.texts);
+
+  /// Takes the `:contains(...)` pseudo-classes out of one compound selector.
+  factory _Step.of(String combinator, String compound) {
+    final texts = <String>[];
+    final css = StringBuffer();
+    var i = 0;
+    while (i < compound.length) {
+      final at = compound.indexOf(_SteppedSelector._marker, i);
+      if (at < 0) {
+        css.write(compound.substring(i));
+        break;
+      }
+      css.write(compound.substring(i, at));
+      var j = at + _SteppedSelector._marker.length;
+      final argument = StringBuffer();
+      String? quote;
+      var depth = 0;
+      while (j < compound.length) {
+        final c = compound[j];
+        if (quote != null) {
+          if (c == quote) {
+            quote = null;
+          } else {
+            argument.write(c);
+          }
+        } else if (c == '"' || c == "'") {
+          quote = c;
+        } else if (c == '(') {
+          depth++;
+          argument.write(c);
+        } else if (c == ')') {
+          if (depth == 0) break;
+          depth--;
+          argument.write(c);
+        } else {
+          argument.write(c);
+        }
+        j++;
+      }
+      texts.add(_normalise(argument.toString()));
+      i = j + 1;
+    }
+    final rest = css.toString().trim();
+    return _Step(combinator, rest.isEmpty ? '*' : rest, texts);
+  }
+
+  /// `''` for the first step, then ` `, `>`, `+` or `~`.
+  final String combinator;
+
+  /// What package:html matches: never empty.
+  final String css;
+
+  /// Texts the element must contain, normalised.
+  final List<String> texts;
+
+  bool accepts(dom.Element element) {
+    if (texts.isEmpty) return true;
+    final text = _normalise(element.text);
+    return texts.every(text.contains);
+  }
+
+  static String _normalise(String value) =>
+      value.replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
 }

@@ -284,6 +284,8 @@
   "liveStreams": "لائیو اسٹریمز",
   "debug": "ڈی بگ",
   "extensionsUpdated": "{count, plural, =1{1 ایکٹینشن اپ ڈیٹ ہو گئی} other{{count} ایکٹینشنز اپ ڈیٹ ہوگئیں}}",
+  "extensionsNewRepositories": "{count, plural, =1{{source} میں 1 نئی ریپوزٹری} other{{source} میں {count} نئی ریپوزٹریز}}",
+  "extensionsNewPlugins": "{count, plural, =1{{repository} میں 1 نیا پلگ ان} other{{repository} میں {count} نئے پلگ ان}}",
   "invalidNavigation": "غلط نیویگیشن۔ براہ کرم پیچھے جائیں۔",
   "startOver": "دوبارہ شروع کریں",
   "goBack": "پیچھے جائیں",

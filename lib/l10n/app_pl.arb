@@ -284,6 +284,8 @@
   "liveStreams": "Na żywo",
   "debug": "DEBUG",
   "extensionsUpdated": "{count, plural, one{1 rozszerzenie zaktualizowane} few{{count} rozszerzenia zaktualizowane} many{{count} rozszerzeń zaktualizowanych} other{{count} rozszerzeń zaktualizowanych}}",
+  "extensionsNewRepositories": "{count, plural, one{Nowe repozytorium w {source}} few{{count} nowe repozytoria w {source}} many{{count} nowych repozytoriów w {source}} other{{count} nowego repozytorium w {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{Nowa wtyczka w {repository}} few{{count} nowe wtyczki w {repository}} many{{count} nowych wtyczek w {repository}} other{{count} nowej wtyczki w {repository}}}",
   "invalidNavigation": "Nieprawidłowa nawigacja.",
   "startOver": "Zacznij od nowa",
   "goBack": "Wstecz",

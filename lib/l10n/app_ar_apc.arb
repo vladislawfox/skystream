@@ -284,6 +284,8 @@
   "liveStreams": "بث مباشر",
   "debug": "ديباغ",
   "extensionsUpdated": "{count, plural, one{تحدثت إضافة وحدة} few{تحدثوا {count} إضافات} many{تحدثوا {count} إضافة} other{تحدثوا {count} إضافة}}",
+  "extensionsNewRepositories": "{count, plural, one{مستودع جديد في {source}} two{مستودعين جداد في {source}} few{{count} مستودعات جديدة في {source}} many{{count} مستودع جديد في {source}} other{{count} مستودع جديد في {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{إضافة جديدة في {repository}} two{إضافتين جداد في {repository}} few{{count} إضافات جديدة في {repository}} many{{count} إضافة جديدة في {repository}} other{{count} إضافة جديدة في {repository}}}",
   "invalidNavigation": "نقلة مو صحيحة.",
   "startOver": "عيد من الأول",
   "goBack": "رجوع",

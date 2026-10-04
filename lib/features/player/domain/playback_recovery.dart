@@ -28,11 +28,36 @@ enum StallAction {
 ///
 /// Long enough that an ordinary rebuffer on a slow connection rides it out: a
 /// nudge forces a fresh request, which on a stream that is merely refilling
-/// its buffer costs more than it saves.
+/// its buffer costs more than it saves. A stream seen to be refilling - bytes
+/// still arriving - is not nudged at all; see [stallActionFor].
 const Duration kStallNudgeAfter = Duration(seconds: 10);
 
 /// How long any source may make no progress at all before it is abandoned.
 const Duration kStallRecoverAfter = Duration(seconds: 25);
+
+/// [kStallNudgeAfter] for a stall that began with a seek.
+///
+/// A seek that lands outside libVLC's read-ahead fetches its keyframe run-up
+/// and three seconds of buffer before the picture moves, which at 4K remux
+/// bitrates on an ordinary line takes longer than [kStallNudgeAfter]. Nor do
+/// the byte counters say it is under way: libVLC updates them from its input
+/// thread, and that thread is the one waiting on the read. Measured on the TV
+/// emulator, they stood still for the first ten seconds of a refill that was
+/// arriving the whole time.
+const Duration kStallNudgeAfterSeek = Duration(seconds: 20);
+
+/// [kStallRecoverAfter] for a stall that began with a seek. See
+/// [kStallNudgeAfterSeek].
+const Duration kStallRecoverAfterSeek = Duration(seconds: 40);
+
+/// How long a source still delivering bytes may sit at one position before
+/// it is abandoned anyway.
+///
+/// Room for the slowest refill worth waiting for - a 4K remux's keyframe
+/// run-up and buffer after a seek, on a line barely faster than its bitrate -
+/// and no more: a source trickling bytes it can never play at is as good as
+/// dead, and the failover ladder has others to try.
+const Duration kStallRecoverWhileArrivingAfter = Duration(seconds: 60);
 
 /// How long a source may take, from the moment it starts opening, to show its
 /// first picture before it is given up on.
@@ -60,19 +85,41 @@ const Duration kTorrentStallRecoverAfter = Duration(minutes: 3);
 /// The rungs are tested in descending severity, so a freeze noticed late — a
 /// suspended laptop that missed a minute of ticks — escalates straight to
 /// recovery instead of walking the ladder a second at a time.
+///
+/// [arriving] is whether the source has delivered bytes in the last few
+/// seconds. A frozen picture over a source that is still delivering is a
+/// refill, not a source gone quiet: a seek that has to fetch its keyframe
+/// run-up and a fresh buffer outlasts [kStallNudgeAfter] on an ordinary line
+/// at 4K remux bitrates. It gets no nudge, whose fresh request would throw
+/// the refill away and start it over, and [kStallRecoverWhileArrivingAfter]
+/// before it is given up on.
+///
+/// [afterSeek] is whether the stall began with a seek, which gets
+/// [kStallNudgeAfterSeek] and [kStallRecoverAfterSeek] for its refill.
 StallAction stallActionFor({
   required Duration stalledFor,
   required bool hadFrames,
   required StallAction lastAction,
   Duration recoverAfter = kStallRecoverAfter,
+  bool arriving = false,
+  bool afterSeek = false,
 }) {
-  if (stalledFor >= recoverAfter && lastAction != StallAction.recover) {
+  var giveUpAfter = recoverAfter;
+  if (afterSeek && giveUpAfter < kStallRecoverAfterSeek) {
+    giveUpAfter = kStallRecoverAfterSeek;
+  }
+  if (arriving && giveUpAfter < kStallRecoverWhileArrivingAfter) {
+    giveUpAfter = kStallRecoverWhileArrivingAfter;
+  }
+  if (stalledFor >= giveUpAfter && lastAction != StallAction.recover) {
     return StallAction.recover;
   }
   // Nothing has been decoded yet, so there is no position to seek back to and
   // no demuxer to unstick. Waiting out the deadline is the only move.
   if (!hadFrames) return StallAction.none;
-  if (stalledFor >= kStallNudgeAfter && lastAction == StallAction.none) {
+  if (arriving) return StallAction.none;
+  final nudgeAfter = afterSeek ? kStallNudgeAfterSeek : kStallNudgeAfter;
+  if (stalledFor >= nudgeAfter && lastAction == StallAction.none) {
     return StallAction.nudge;
   }
   return StallAction.none;
@@ -93,21 +140,50 @@ StallAction stallActionFor({
 /// are walked last rather than dropped: a slow host, or one that refuses the
 /// probe's HEAD and ranged GET, reads as dead and still streams. Before
 /// everything else, though, they would each cost the full stall deadline.
+///
+/// [cannotSeek] are the candidates whose servers ignore byte ranges, for a
+/// walk that resumes mid-film: one of them would start it again from the
+/// top. Walked after the rest, but before the ones found dead - a film from
+/// the start still beats none.
 int? nextFailoverIndex({
   required int from,
   required int total,
   required Set<int> tried,
   Set<int> unreachable = const <int>{},
+  Set<int> cannotSeek = const <int>{},
 }) {
   if (total <= 0) return null;
+  int? fromTheStart;
   int? lastResort;
   for (var step = 1; step <= total; step++) {
     final candidate = (from + step) % total;
     if (tried.contains(candidate)) continue;
-    if (!unreachable.contains(candidate)) return candidate;
-    lastResort ??= candidate;
+    if (unreachable.contains(candidate)) {
+      lastResort ??= candidate;
+    } else if (cannotSeek.contains(candidate)) {
+      fromTheStart ??= candidate;
+    } else {
+      return candidate;
+    }
   }
-  return lastResort;
+  return fromTheStart ?? lastResort;
+}
+
+/// The source to resume on: [preferred], unless the check found its server
+/// ignores byte ranges - libVLC would start it from the top, losing the
+/// viewer's place - and has vouched for one that can seek.
+///
+/// Only a settled answer moves it: a probe still out may yet say the same.
+int resumeSourceIndex({
+  required int preferred,
+  required int total,
+  required Map<int, ProbeOutcome> probes,
+}) {
+  if (probes[preferred] != ProbeOutcome.unseekable) return preferred;
+  for (var index = 0; index < total; index++) {
+    if (probes[index] == ProbeOutcome.healthy) return index;
+  }
+  return preferred;
 }
 
 /// Where to go when the source at [except] turns out unreachable while it
@@ -118,17 +194,23 @@ int? nextFailoverIndex({
 /// candidate is as unproven as the one just abandoned. Null means there is
 /// nowhere proven to go, and the caller should keep opening rather than
 /// abandon a source on the probe's word alone - it is wrong about slow hosts.
+///
+/// One that can be sought in comes first; one whose server ignores byte
+/// ranges plays too, only from its start.
 int? firstReachableIndex({
   required int total,
   required Map<int, ProbeOutcome> probes,
   required Set<int> failed,
   required int except,
 }) {
+  int? fromTheStart;
   for (var index = 0; index < total; index++) {
     if (index == except || failed.contains(index)) continue;
-    if (probes[index] == ProbeOutcome.healthy) return index;
+    final probe = probes[index];
+    if (probe == ProbeOutcome.healthy) return index;
+    if (probe == ProbeOutcome.unseekable) fromTheStart ??= index;
   }
-  return null;
+  return fromTheStart;
 }
 
 /// What the decoder is doing behind a clock that *is* advancing.

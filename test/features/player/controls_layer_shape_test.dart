@@ -1,3 +1,7 @@
+// A test's ProviderScope is its root scope; the rule only recognises one
+// passed to runApp.
+// ignore_for_file: riverpod_lint/scoped_providers_should_specify_dependencies
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';

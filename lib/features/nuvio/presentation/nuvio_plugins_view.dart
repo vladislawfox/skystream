@@ -91,9 +91,9 @@ class _NuvioPluginsViewState extends ConsumerState<NuvioPluginsView> {
     return FocusTraversalGroup(
       policy: ReadingOrderTraversalPolicy(),
       child: ListView(
-        padding: const EdgeInsets.only(
+        padding: EdgeInsets.only(
           top: LayoutConstants.spacingMd,
-          bottom: 100,
+          bottom: LayoutConstants.shellBottomContentPadding(context),
         ),
         addAutomaticKeepAlives: false,
         children: [
@@ -252,7 +252,7 @@ class _NuvioPluginsViewState extends ConsumerState<NuvioPluginsView> {
                                 ),
                               ),
                               Text(
-                                'Checks each repository (max once every ${NuvioRepository.autoUpdateInterval.inHours}h).',
+                                'Checks every repository each time the app opens.',
                                 style: theme.textTheme.labelSmall?.copyWith(
                                   color: cs.onSurfaceVariant,
                                 ),
@@ -1152,8 +1152,10 @@ class _FocusableCardState extends State<_FocusableCard> {
 
     // The card lights up only for focus it owns itself, such as its
     // ExpansionTile header or a button in the repository action row. A focused
-    // scraper row draws its own affordance instead.
-    final highlight = _isFocused && _focusedRow == null;
+    // scraper row draws its own affordance instead. And only for a remote or a
+    // keyboard: under a thumb, focus inside the card is no reason to light it.
+    final highlight =
+        showFocusIndicator(context, _isFocused) && _focusedRow == null;
 
     return NotificationListener<_RowFocusNotification>(
       onNotification: _onRowFocus,

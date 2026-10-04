@@ -93,6 +93,7 @@ class PanelRow extends StatefulWidget {
     this.enabled = true,
     this.autofocus = false,
     this.trailing,
+    this.focusNode,
     super.key,
   });
 
@@ -133,6 +134,12 @@ class PanelRow extends StatefulWidget {
 
   final Widget? trailing;
 
+  /// The row's focus stop, for a caller that has to hand focus back to this
+  /// row later. A lazily-built list keeps a row's own node with its position,
+  /// not with the row, so the node goes with the row that owns it when rows
+  /// ahead of it come and go.
+  final FocusNode? focusNode;
+
   final VoidCallback onTap;
 
   @override
@@ -154,6 +161,7 @@ class _PanelRowState extends State<PanelRow> {
       selected: widget.selected,
       label: widget.label,
       child: Focus(
+        focusNode: widget.focusNode,
         autofocus: widget.autofocus,
         canRequestFocus: enabled,
         onFocusChange: (value) => setState(() => _focused = value),

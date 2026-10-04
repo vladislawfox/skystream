@@ -20,6 +20,13 @@ library;
 
 import 'dart:math' as math;
 
+/// How many samples after a seek are the demuxer's refill burst rather than
+/// playback: the preroll and three seconds of buffer, read in about two.
+const int _kSettledAfter = 2;
+
+/// How far one sample moves the smoothed rate.
+const double _kRateSmoothing = 0.25;
+
 /// The largest read-ahead worth reporting.
 ///
 /// Past this the figure is far more likely to be an artefact - a stalled
@@ -110,6 +117,13 @@ double? bufferedFraction({
 /// demuxed. A seek that lands *inside* the window leaks in the same way for a
 /// smaller amount: the demuxer repositions over bytes it never reads.
 ///
+/// A seek *backwards* leaks the lot. Once the window is full, unread data
+/// takes precedence over what has already been handed on, so it keeps next
+/// to nothing behind the read point, and a target there empties the window
+/// the same way - forward part included - and reads again from the new place.
+/// That includes a seek to where playback already is: the demuxer has read
+/// seconds past it.
+///
 /// Either way the gap between the counters is permanently wider than the
 /// buffer by whatever was skipped, and it never closes. Left alone the figure
 /// grows with every seek until `ahead / rate` clears
@@ -117,9 +131,10 @@ double? bufferedFraction({
 /// at all - which is what a viewer sees as the buffered band vanishing after a
 /// seek and not coming back.
 ///
-/// THE FIX. Carry the leaked total. Each seek strands about
-/// `skipped * bytesPerSecond` more bytes, capped by the gap itself, and that
-/// running total is subtracted before the gap is read as a buffer.
+/// THE FIX. Carry the leaked total. Each seek forwards strands about
+/// `skipped * bytesPerSecond` more bytes, capped by the gap itself; each seek
+/// backwards strands the whole gap as last measured. That running total is
+/// subtracted before the gap is read as a buffer.
 ///
 /// It is still an estimate: the rate it converts the skip with is the measured
 /// one, so the correction inherits its error. It errs towards *under*-reporting
@@ -136,6 +151,10 @@ class BufferedAheadEstimator {
   int? _previousDemuxReadBytes;
   Duration _lastSampleAt = Duration.zero;
 
+  /// `readBytes - demuxReadBytes` at the previous sample: everything a seek
+  /// backwards throws away, stranded bytes included.
+  int? _previousGap;
+
   /// The position at the previous sample, or null when there has not been one
   /// to measure a skip against.
   Duration? _lastPosition;
@@ -145,6 +164,20 @@ class BufferedAheadEstimator {
   /// convert it into bytes. Held rather than applied immediately because the
   /// sample that spans a seek is exactly the one whose rate cannot be trusted.
   Duration? _pendingSkip;
+
+  /// The demuxer's rate over ordinary playback, smoothed, in bytes a second.
+  ///
+  /// One second's consumption swings by a third either way, because the
+  /// demuxer reads a cluster at a time, and the second after a seek is its
+  /// refill burst - five or six times the stream's own rate. Converted at
+  /// that, a ten second skip came to 25 MB instead of 4, and the band read 47
+  /// seconds for a buffer of nearly six minutes. The band's seconds and a
+  /// skip's bytes are both worked out at this instead.
+  double? _steadyRate;
+
+  /// Samples since a seek was noticed, up to [_kSettledAfter]; none of them
+  /// is steady until it gets there.
+  int _samplesSinceSeek = _kSettledAfter;
 
   /// Drops the seek correction, for a media change.
   ///
@@ -164,10 +197,19 @@ class BufferedAheadEstimator {
     _stranded = 0;
     _pendingSkip = null;
     _lastPosition = null;
+    // A different stream reads at a different rate, and opens with a burst
+    // of its own.
+    _steadyRate = null;
+    _samplesSinceSeek = 0;
   }
 
   /// One stats sample. Returns the read-ahead, or null when it cannot be known
   /// and the band should therefore be drawn as nothing.
+  ///
+  /// [capacityBytes] is the size of libVLC's prefetch buffer, where known.
+  /// Nothing more than that can be held, so anything past it in the gap is
+  /// stranded: that is what corrects a forward seek which emptied the buffer
+  /// rather than skipping inside it, which the skip alone never accounts for.
   ///
   /// [at] is any monotonic clock; only differences are used. [seekRequests] is
   /// the controller's own count, which is what makes a seek visible here at
@@ -180,17 +222,22 @@ class BufferedAheadEstimator {
     required Duration at,
     required int seekRequests,
     double speed = 1.0,
+    int? capacityBytes,
   }) {
     final previous = _previousDemuxReadBytes;
     final interval = at - _lastSampleAt;
     _previousDemuxReadBytes = demuxReadBytes;
     _lastSampleAt = at;
+    final gap = readBytes - demuxReadBytes;
+    final previousGap = _previousGap;
+    _previousGap = gap;
 
     final lastPosition = _lastPosition;
     _lastPosition = position;
 
     if (seekRequests != _seenSeekRequests) {
       _seenSeekRequests = seekRequests;
+      _samplesSinceSeek = 0;
       // Only measurable against a previous sample. Without one there is
       // nothing stranded to measure anyway: this is the seek a player makes on
       // its way into a stream - to a resume point, or to the start - and it
@@ -204,11 +251,20 @@ class BufferedAheadEstimator {
         final moved = position - lastPosition;
         final played = interval * (speed <= 0 ? 1.0 : speed);
         final skipped = moved - played;
-        // A backward seek strands nothing: the demuxer re-reads bytes it has
-        // already counted, so the gap closes on its own and the band simply
-        // under-reports until it has caught back up.
-        _pendingSkip = skipped > Duration.zero ? skipped : Duration.zero;
+        if (skipped.isNegative && previousGap != null) {
+          // Backwards, which empties the window: all of it is stranded, and
+          // no rate is needed to say how much. Capped by the gap now, so a
+          // step back the window did cover under-reports rather than going
+          // negative.
+          _pendingSkip = null;
+          _stranded = math.min(gap, previousGap);
+          if (_stranded < 0) _stranded = 0;
+        } else {
+          _pendingSkip = skipped > Duration.zero ? skipped : Duration.zero;
+        }
       }
+    } else if (_samplesSinceSeek < _kSettledAfter) {
+      _samplesSinceSeek++;
     }
 
     if (previous == null) return null;
@@ -218,25 +274,33 @@ class BufferedAheadEstimator {
     if (consumed <= 0 || seconds <= 0) return null;
     final bytesPerSecond = consumed / seconds;
     if (!bytesPerSecond.isFinite || bytesPerSecond <= 0) return null;
+    if (_samplesSinceSeek >= _kSettledAfter) {
+      final steady = _steadyRate;
+      _steadyRate = steady == null
+          ? bytesPerSecond
+          : steady + (bytesPerSecond - steady) * _kRateSmoothing;
+    }
+    final rate = _steadyRate ?? bytesPerSecond;
 
     final pending = _pendingSkip;
     if (pending != null) {
       _pendingSkip = null;
-      final skippedBytes =
-          (pending.inMicroseconds / 1e6 * bytesPerSecond).round();
+      final skippedBytes = (pending.inMicroseconds / 1e6 * rate).round();
       // Never strand more than the gap holds: the cap is what turns a scrub
       // across the whole film into "the buffer is empty" rather than a
       // negative one.
-      _stranded = math.min(readBytes - demuxReadBytes, _stranded + skippedBytes);
+      _stranded = math.min(gap, _stranded + skippedBytes);
       if (_stranded < 0) _stranded = 0;
     }
+    if (capacityBytes != null && gap - _stranded > capacityBytes) {
+      _stranded = gap - capacityBytes;
+    }
 
-    return bufferedAhead(
-      readBytes: readBytes,
-      demuxReadBytes: demuxReadBytes,
-      previousDemuxReadBytes: previous,
-      sampleInterval: interval,
-      strandedBytes: _stranded,
-    );
+    final held = gap - _stranded;
+    if (held <= 0) return Duration.zero;
+    final ahead = held / rate;
+    if (!ahead.isFinite) return null;
+    final result = Duration(microseconds: (ahead * 1e6).round());
+    return result > kMaxReportableBufferedAhead ? null : result;
   }
 }

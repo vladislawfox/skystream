@@ -18,6 +18,8 @@ import '../../../../shared/widgets/loading_indicator.dart';
 
 import 'package:skystream/core/services/notification_service.dart';
 
+import '../../../../shared/focus/app_focus.dart';
+
 class MovieSeasonsList extends ConsumerStatefulWidget {
   final int movieId;
   final List<TmdbSeason> seasons;
@@ -122,7 +124,10 @@ class _MovieSeasonsListState extends ConsumerState<MovieSeasonsList> {
               ListenableBuilder(
                 listenable: _seasonDropdownFocusNode,
                 builder: (context, _) {
-                  final isFocused = _seasonDropdownFocusNode.hasFocus;
+                  final isFocused = showFocusIndicator(
+                    context,
+                    _seasonDropdownFocusNode.hasFocus,
+                  );
                   return Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     decoration: BoxDecoration(
@@ -564,7 +569,10 @@ class _MovieSeasonsListState extends ConsumerState<MovieSeasonsList> {
                       ListenableBuilder(
                         listenable: _rangeDropdownFocusNode,
                         builder: (context, _) {
-                          final isFocused = _rangeDropdownFocusNode.hasFocus;
+                          final isFocused = showFocusIndicator(
+                            context,
+                            _rangeDropdownFocusNode.hasFocus,
+                          );
                           return Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 12,

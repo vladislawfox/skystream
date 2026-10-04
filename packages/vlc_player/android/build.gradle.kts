@@ -61,6 +61,20 @@ android {
         // Going below 24 is possible — it needs a SDK_INT guard around the
         // PixelCopy call in VlcPlayerPlatformView — but is not done here.
         minSdk = 24
+
+        // Keeps the names the crop shim's JNI binding needs in a minified
+        // host; see consumer-rules.pro.
+        consumerProguardFiles("consumer-rules.pro")
+    }
+
+    // libVLC's crop, which libvlc-android does not expose in Java: see
+    // src/main/cpp/vlc_player_geometry.c. The NDK version comes from the host's
+    // root build, which pins one for every subproject.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     testOptions {

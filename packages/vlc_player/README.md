@@ -392,6 +392,11 @@ Playback methods:
 - `setAudioDelay(Duration delay)`
 - `setSubtitleDelay(Duration delay)`
 - `takeSnapshot({int? width, int? height})`
+- `setDurationCap(Duration? cap)`: reports at most `cap` as the duration until
+  the next media, for a length libVLC overstates. libVLC takes an HLS master's
+  length from its longest playlist, alternative renditions included, so a
+  subtitle playlist that claims more than the video sets it; pass the video
+  playlist's own length. Only ever shortens; `null` lifts it.
 
 Track, subtitle, and media information methods:
 

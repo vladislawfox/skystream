@@ -7,6 +7,7 @@ import 'package:skystream/l10n/generated/app_localizations.dart';
 import '../search_provider.dart';
 import '../../../../shared/widgets/loading_indicator.dart';
 import '../../../../shared/widgets/cards_wrapper.dart';
+import '../../../../shared/focus/app_focus.dart';
 
 /// The Live TV glyph: three bars of different heights, standing still.
 ///
@@ -468,8 +469,10 @@ class _SearchHeaderBarState extends ConsumerState<SearchHeaderBar> {
                               suffix = AnimatedBuilder(
                                 animation: widget.clearButtonFocusNode,
                                 builder: (context, child) {
-                                  final isFocused =
-                                      widget.clearButtonFocusNode.hasFocus;
+                                  final isFocused = showFocusIndicator(
+                                    context,
+                                    widget.clearButtonFocusNode.hasFocus,
+                                  );
                                   return IconButton(
                                     focusNode: widget.clearButtonFocusNode,
                                     icon: Icon(

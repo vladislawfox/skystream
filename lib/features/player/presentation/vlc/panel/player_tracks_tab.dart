@@ -1,6 +1,11 @@
 /// The Audio and Subtitles tabs.
 ///
-/// The engine owns both the track list and the selection: nothing here caches,
+/// Subtitles come from two owners, listed one after the other: the tracks
+/// inside the video, which libVLC draws, and subtitle files, which SkyStream
+/// reads and draws itself ([SideCarSubtitles]). At most one of them is on, so
+/// picking from either side takes the other side's off first.
+///
+/// The engine owns its track list and its selection: nothing here caches,
 /// mirrors or merges either. `VlcPlayerValue.activeAudioTrackId` and
 /// `activeSubtitleTrackId` say which track is rendering right now, every
 /// native re-sends its snapshot after a set/disable/add, and the tick is read
@@ -36,12 +41,15 @@ import 'package:flutter/material.dart';
 import 'package:vlc_player/vlc_player.dart';
 
 import '../../../../../l10n/generated/app_localizations.dart';
+import '../../../domain/side_car_subtitles.dart';
 import '../../../domain/subtitle_search_target.dart';
+import '../../../domain/track_language.dart';
 import '../player_value_selector.dart';
-import '../vlc_subtitle_search_sheet.dart';
 import 'player_anchored_list.dart';
 import 'player_panel_labels.dart';
+import 'player_panel_page.dart';
 import 'player_panel_row.dart';
+import 'player_subtitle_search_page.dart';
 
 /// Which list a tab is showing. The two differ by more than a title: only
 /// subtitles have an Off and two ways to add a track from outside.
@@ -80,7 +88,10 @@ class PlayerTracksTab extends StatelessWidget {
     required this.tracks,
     required this.trackInfo,
     required this.onTracksChanged,
+    required this.onOpenPage,
+    this.sideCars,
     this.target,
+    this.searchFocusNode,
     this.isTv = false,
     this.autofocus = false,
     super.key,
@@ -116,6 +127,20 @@ class PlayerTracksTab extends StatelessWidget {
   /// screen is out of date (see `_setTrack`).
   final VoidCallback onTracksChanged;
 
+  /// Opens a second step in the panel's place: the online search. See
+  /// [PanelPage].
+  final ValueChanged<PanelPage> onOpenPage;
+
+  /// The Search online row's focus stop, held by the panel so Back from the
+  /// search can hand focus back to that row wherever the list has moved it -
+  /// a file the search added is listed ahead of it.
+  final FocusNode? searchFocusNode;
+
+  /// The subtitle files SkyStream draws, listed after the video's own tracks.
+  /// Null only where there is no screen behind the panel to draw them; files
+  /// the viewer adds then go to libVLC.
+  final SideCarSubtitles? sideCars;
+
   /// What the online search is about: the screen's title, ids and episode.
   /// Null for media the catalogue knows nothing of, where the engine's own
   /// metadata seeds a title-only search instead.
@@ -135,13 +160,20 @@ class PlayerTracksTab extends StatelessWidget {
 
     // The active id and the revision are the only two things in the value
     // this list draws from; a position tick every 250 ms is not a rebuild.
-    return PlayerValueSelector<(int?, int)>(
+    Widget engineList() => PlayerValueSelector<(int?, int)>(
       controller: controller,
       selector: (value) => (
         _isAudio ? value.activeAudioTrackId : value.activeSubtitleTrackId,
         value.trackRevision,
       ),
       builder: (context, selected) => _list(context, l10n, listed, selected.$1),
+    );
+
+    final files = sideCars;
+    if (_isAudio || files == null) return engineList();
+    return ListenableBuilder(
+      listenable: files,
+      builder: (context, _) => engineList(),
     );
   }
 
@@ -151,19 +183,34 @@ class PlayerTracksTab extends StatelessWidget {
     List<VlcTrackDescription> listed,
     int? active,
   ) {
-    // Focus has to land somewhere: the active row, or - when the engine names
-    // nothing or names a track the list has not caught up with - Off for
+    final files = _isAudio
+        ? const <SideCarTrack>[]
+        : sideCars?.tracks ?? const <SideCarTrack>[];
+    final activeFile = _isAudio ? null : sideCars?.active;
+    // The engine's tick stands only while no file is on: the two are never on
+    // together, and for the moment it takes libVLC to drop its own after a
+    // file goes on, the file is the one on screen.
+    final engineActive = activeFile == null ? active : null;
+
+    // Focus has to land somewhere: the active row, or - when nothing is on or
+    // the engine names a track the list has not caught up with - Off for
     // subtitles and the first row for audio. The tick is stricter and follows
     // the engine alone.
-    final known = active != null && listed.any((track) => track.id == active);
+    final known =
+        engineActive != null && listed.any((track) => track.id == engineActive);
 
     // The same answers as positions in the flattened child list, which is what
     // [PanelAnchoredList] scrolls to. Only subtitles have an Off row ahead of
     // the tracks, and an empty list puts a note where they were.
     final leading = _isAudio ? 0 : 1;
-    final retryIndex = leading + (listed.isEmpty ? 1 : listed.length);
-    final anchor = known
-        ? leading + listed.indexWhere((track) => track.id == active)
+    final empty = listed.isEmpty && files.isEmpty;
+    final filesStart = leading + listed.length;
+    final retryIndex = empty ? leading + 1 : filesStart + files.length;
+    final activeFileIndex = activeFile == null ? -1 : files.indexOf(activeFile);
+    final anchor = activeFileIndex >= 0
+        ? filesStart + activeFileIndex
+        : known
+        ? leading + listed.indexWhere((track) => track.id == engineActive)
         : (_isAudio ? (listed.isEmpty ? retryIndex : 0) : 0);
 
     final children = <Widget>[
@@ -171,32 +218,47 @@ class PlayerTracksTab extends StatelessWidget {
         PanelRow(
           label: l10n.off,
           icon: Icons.subtitles_off_outlined,
-          selected: active == null,
+          selected: engineActive == null && activeFile == null,
           autofocus: autofocus && anchor == 0,
           onTap: () => unawaited(
-            _setTrack(context, controller.disableSubtitle, reseat: false),
+            _setTrack(context, () async {
+              await sideCars?.select(null);
+              await controller.disableSubtitle();
+            }, reseat: false),
           ),
         ),
-      if (listed.isEmpty)
+      if (empty)
         PanelEmpty(
           text: _isAudio ? l10n.noAudioTracksReported : l10n.noSubtitlesFound,
         )
-      else
+      else ...[
         for (final (index, track) in listed.indexed)
           PanelRow(
             label: trackLabel(track, _infoFor(index), l10n),
             detail: trackDetail(_infoFor(index)),
-            selected: active == track.id,
+            selected: engineActive == track.id,
             autofocus: autofocus && anchor == leading + index,
             onTap: () => unawaited(
-              _setTrack(
-                context,
-                () => _isAudio
-                    ? controller.setAudioTrack(track.id)
-                    : controller.setSubtitleTrack(track.id),
-              ),
+              _setTrack(context, () async {
+                if (_isAudio) return controller.setAudioTrack(track.id);
+                await sideCars?.select(null);
+                await controller.setSubtitleTrack(track.id);
+              }),
             ),
           ),
+        for (final (index, file) in files.indexed)
+          PanelRow(
+            label: sideCarLabel(file, index, l10n),
+            detail: switch (sideCars!.statusOf(file)) {
+              SideCarStatus.loading => l10n.loading,
+              SideCarStatus.failed => l10n.failed,
+              _ => null,
+            },
+            selected: activeFile == file,
+            autofocus: autofocus && anchor == filesStart + index,
+            onTap: () => unawaited(_showFile(file)),
+          ),
+      ],
       // Tracks can arrive after the panel opened. The panel re-reads the list
       // when the engine's revision moves; this is the manual fallback for an
       // engine that did not say, and the only row an empty Audio tab has.
@@ -282,6 +344,34 @@ class PlayerTracksTab extends StatelessWidget {
     }
   }
 
+  /// Puts a subtitle file on screen - at once, filling in as it arrives - and
+  /// takes libVLC's own subtitle off. Completes with whether the file could
+  /// be read, which for one handed to libVLC means handed over.
+  Future<bool> _showFile(SideCarTrack file) async {
+    final files = sideCars!;
+    final shown = files.select(file, from: controller.value.position);
+    try {
+      await controller.disableSubtitle();
+    } on VlcPlayerException catch (_) {
+      // The screen keeps libVLC's subtitle off under a file anyway; this only
+      // saves the wait for its next tick.
+    }
+    return await shown || !files.tracks.contains(file);
+  }
+
+  /// A file the viewer brought, from the device or a search: SkyStream draws
+  /// it when there is a screen to, libVLC otherwise.
+  Future<bool> _addFile(Uri file, {String? label, String? language}) async {
+    final files = sideCars;
+    if (files == null) {
+      await controller.addSubtitle(file);
+      return true;
+    }
+    return _showFile(
+      files.addViewerTrack(file, label: label, language: language),
+    );
+  }
+
   /// Runs a delay call. Same absorption as [_setTrack], and for the same
   /// reason, but no reload: the stepper reads
   /// `value.audioDelay`/`value.subtitleDelay`, so a refused delay is a
@@ -307,12 +397,12 @@ class PlayerTracksTab extends StatelessWidget {
     ];
   }
 
-  /// The two ways a subtitle the stream does not carry gets into the engine,
-  /// and the one runtime adjustment libVLC exposes.
+  /// The two ways a subtitle the stream does not carry gets on screen, and
+  /// the one runtime adjustment, which moves files and the video's own tracks
+  /// alike.
   ///
-  /// Both entry points end at `addSubtitle`, which makes the file a real
-  /// track, so neither needs anywhere to put its result: it is in the list
-  /// above the next time the list is read.
+  /// Both entry points end at [_addFile], which lists the file and turns it
+  /// on, so neither needs anywhere to put its result.
   List<Widget> _subtitleExtras(BuildContext context, AppLocalizations l10n) {
     return <Widget>[
       PanelSubheader(title: l10n.subtitleOptions),
@@ -324,7 +414,8 @@ class PlayerTracksTab extends StatelessWidget {
       PanelRow(
         label: l10n.searchSubtitlesOnline,
         icon: Icons.search_rounded,
-        onTap: () => unawaited(_searchOnline(context)),
+        focusNode: searchFocusNode,
+        onTap: () => unawaited(_searchOnline(context, l10n)),
       ),
       _delayStepper(
         label: l10n.subtitleDelay,
@@ -367,7 +458,7 @@ class PlayerTracksTab extends StatelessWidget {
     final path = picked?.path;
     if (path == null) return;
     try {
-      await controller.addSubtitle(Uri.file(path));
+      await _addFile(Uri.file(path), label: picked?.name);
     } on VlcPlayerException catch (_) {
       // A file the engine will not take. Absorbed like every other engine
       // call here (see [_setTrack]): the handler is unawaited, and the list is
@@ -376,18 +467,35 @@ class PlayerTracksTab extends StatelessWidget {
     // Deliberately no reload here - see the note on [onTracksChanged].
   }
 
-  Future<void> _searchOnline(BuildContext context) async {
+  /// Opens the search as the panel's second step. Done or backed out of, it
+  /// ends on this list again: a viewer who backed out still wants the tracks
+  /// they opened it from, and one who picked a result sees it ticked here.
+  /// Nothing is re-read when it closes: a pick ends at the same queued
+  /// `addSubtitle`, with the problem described on [onTracksChanged].
+  Future<void> _searchOnline(
+    BuildContext context,
+    AppLocalizations l10n,
+  ) async {
     final seed = await _searchSeed();
     if (!context.mounted) return;
-    // The panel stays up either way: a viewer who backed out of the search
-    // still wants the track list they opened it from. What the sheet returns
-    // is not acted on: it ends at the same queued `addSubtitle`, so re-reading
-    // on its word has the problem described on [onTracksChanged].
-    await VlcSubtitleSearchSheet.show(
-      context,
-      controller,
-      target: seed,
-      isTv: isTv,
+    final files = sideCars;
+    onOpenPage(
+      PanelPage(
+        title: l10n.searchSubtitlesOnline,
+        builder: (context, close) => SubtitleSearchPage(
+          controller: controller,
+          target: seed,
+          isTv: isTv,
+          onFile: files == null
+              ? null
+              : (file, subtitle) => _addFile(
+                  file,
+                  label: subtitle.name.isEmpty ? null : subtitle.name,
+                  language: subtitle.language,
+                ),
+          onDone: close,
+        ),
+      ),
     );
   }
 
@@ -405,4 +513,17 @@ class PlayerTracksTab extends StatelessWidget {
       return null;
     }
   }
+}
+
+/// A subtitle file's row: what the source or the viewer called it, else its
+/// language, else the file's own name - and a number only when there is none
+/// of those.
+String sideCarLabel(SideCarTrack file, int index, AppLocalizations l10n) {
+  final label = file.label?.trim();
+  if (label != null && label.isNotEmpty) return label;
+  final language = languageNameForCode(file.languageCode ?? '');
+  if (language != null) return language;
+  final name = file.url.pathSegments.lastOrNull;
+  if (name != null && name.isNotEmpty) return Uri.decodeComponent(name);
+  return l10n.playerTrackNumber(index + 1);
 }

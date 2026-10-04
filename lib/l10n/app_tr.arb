@@ -284,6 +284,8 @@
   "liveStreams": "Canlı Yayınlar",
   "debug": "HATA AYIKLAMA",
   "extensionsUpdated": "{count, plural, =1{1 eklenti güncellendi} other{{count} eklenti güncellendi}}",
+  "extensionsNewRepositories": "{count, plural, =1{{source}: 1 yeni depo} other{{source}: {count} yeni depo}}",
+  "extensionsNewPlugins": "{count, plural, =1{{repository}: 1 yeni eklenti} other{{repository}: {count} yeni eklenti}}",
   "invalidNavigation": "Geçersiz navigasyon. Lütfen geri gidin.",
   "startOver": "Yeniden Başla",
   "goBack": "Geri Dön",

@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 import '../../../core/network/dio_client_provider.dart';
 import '../data/subtitle_providers.dart';
 import '../domain/entity/subtitle_model.dart';
+import '../domain/subtitle_archive.dart';
 import '../../settings/presentation/player_settings_provider.dart';
 
 part 'subtitle_search_provider.g.dart';
@@ -20,27 +21,43 @@ part 'subtitle_search_provider.g.dart';
 class _SubtitleZipArgs {
   final Uint8List bytes;
   final String tempDirPath;
-  _SubtitleZipArgs(this.bytes, this.tempDirPath);
+  final int? season;
+  final int? episode;
+  final String? language;
+  _SubtitleZipArgs(
+    this.bytes,
+    this.tempDirPath, {
+    this.season,
+    this.episode,
+    this.language,
+  });
 }
 
+/// Writes out the file of the archive [pickSubtitleEntry] chooses - the
+/// episode being watched from a season pack, and never the uploader's note -
+/// or null when none will do.
 Future<String?> _extractSubtitleFromZip(_SubtitleZipArgs args) async {
   final archive = ZipDecoder().decodeBytes(args.bytes);
-  for (final file in archive) {
-    if (file.isFile &&
-        (file.name.endsWith('.srt') ||
-            file.name.endsWith('.vtt') ||
-            file.name.endsWith('.ass'))) {
-      final subFile = File(
-        p.join(
-          args.tempDirPath,
-          "sub_${DateTime.now().millisecondsSinceEpoch}_${file.name}",
-        ),
-      );
-      await subFile.writeAsBytes(file.content as List<int>);
-      return subFile.path;
-    }
-  }
-  return null;
+  final files = [
+    for (final file in archive)
+      if (file.isFile) file,
+  ];
+  final picked = pickSubtitleEntry(
+    [for (final file in files) (name: file.name, size: file.size)],
+    season: args.season,
+    episode: args.episode,
+    language: args.language,
+  );
+  if (picked == null) return null;
+  final file = files.firstWhere((file) => file.name == picked);
+  final subFile = File(
+    p.join(
+      args.tempDirPath,
+      "sub_${DateTime.now().millisecondsSinceEpoch}_${p.basename(file.name)}",
+    ),
+  );
+  await subFile.writeAsBytes(file.content as List<int>);
+  return subFile.path;
 }
 
 List<int> _decompressGzip(Uint8List bytes) {
@@ -132,6 +149,7 @@ class SubtitleSearch extends _$SubtitleSearch {
   @visibleForTesting
   static List<SubtitleProvider>? debugProviders;
 
+  // ignore: riverpod_lint/avoid_public_notifier_properties
   /// How the current results were found. Assigned before every `state`
   /// write, so reading it next to a watched state is always consistent.
   ///
@@ -141,8 +159,9 @@ class SubtitleSearch extends _$SubtitleSearch {
   /// the state class would rebuild every watcher whenever only the mode
   /// changed. The invariant above is what keeps the pair consistent.
   ///
-  /// (riverpod_lint still reports this; its diagnostics come from an analyzer
-  /// plugin, which `// ignore:` comments do not filter.)
+  /// Hence the ignore above this comment, where the diagnostic starts. An
+  /// analyzer plugin's diagnostics are filtered only by an ignore that names
+  /// the plugin: `riverpod_lint/avoid_public_notifier_properties`.
   SubtitleSearchMode lastMode = SubtitleSearchMode.byTitle;
 
   late List<SubtitleProvider> _providers;
@@ -393,7 +412,15 @@ class SubtitleSearch extends _$SubtitleSearch {
     }
   }
 
-  Future<String?> downloadAndPrepare(OnlineSubtitle subtitle) async {
+  /// Downloads [subtitle] and writes it to a local file, returning its path.
+  ///
+  /// [season] and [episode] - the episode being watched - choose the file
+  /// out of a season pack; see [pickSubtitleEntry].
+  Future<String?> downloadAndPrepare(
+    OnlineSubtitle subtitle, {
+    int? season,
+    int? episode,
+  }) async {
     _initializeProviders();
     final dio = ref.read(dioClientProvider);
     final provider = _providers.firstWhere((p) => p.name == subtitle.source);
@@ -467,7 +494,13 @@ class SubtitleSearch extends _$SubtitleSearch {
         }
         final extractedPath = await compute(
           _extractSubtitleFromZip,
-          _SubtitleZipArgs(Uint8List.fromList(bytes), tempDir.path),
+          _SubtitleZipArgs(
+            Uint8List.fromList(bytes),
+            tempDir.path,
+            season: season,
+            episode: episode,
+            language: subtitle.language,
+          ),
         );
         if (extractedPath != null) {
           if (kDebugMode) {
@@ -477,7 +510,7 @@ class SubtitleSearch extends _$SubtitleSearch {
         }
         if (kDebugMode) {
           debugPrint(
-            "[SubtitleDownload] ❌ ZIP contained no .srt/.vtt/.ass files.",
+            "[SubtitleDownload] ❌ ZIP had no subtitle file for this episode.",
           );
         }
       } else if (bytes.length > 2 && bytes[0] == 0x1F && bytes[1] == 0x8B) {

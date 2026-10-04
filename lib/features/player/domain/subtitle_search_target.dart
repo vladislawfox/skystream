@@ -35,9 +35,19 @@ class SubtitleSearchTarget {
   /// season/episode - the `Episode` defaults - are "unknown" and become null
   /// too. Title is always the bare show title: providers that take
   /// season_number / episode_number need it, not "Show S02E05".
+  ///
+  /// A film has no season or episode either, though plugins such as 4K HD
+  /// hand one over as a show of one episode, S1 E1. Searched as that, every
+  /// provider came back empty and the season-wide fallback went on to a text
+  /// search that SubSource answered with another show's season. An item typed
+  /// a movie with at most one episode is a film; one typed a movie that lists
+  /// several is a series its plugin left untyped, and keeps its episode.
   factory SubtitleSearchTarget.of(MultimediaItem item, Episode? episode) {
-    final season = episode?.season ?? 0;
-    final number = episode?.episode ?? 0;
+    final film =
+        item.contentType == MultimediaContentType.movie &&
+        (item.episodes?.length ?? 0) <= 1;
+    final season = film ? 0 : episode?.season ?? 0;
+    final number = film ? 0 : episode?.episode ?? 0;
     return SubtitleSearchTarget(
       title: item.title,
       imdbId: normalizeImdbId(

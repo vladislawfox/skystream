@@ -5,6 +5,9 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 part 'notification_service.g.dart';
 
 @Riverpod(keepAlive: true)
+// A service object: widgets listen to it directly (the ListenableBuilder in
+// m3_toast_overlay.dart), and the provider only hands it out.
+// ignore: riverpod_lint/unsupported_provider_value
 NotificationService notificationService(Ref ref) {
   return NotificationService();
 }

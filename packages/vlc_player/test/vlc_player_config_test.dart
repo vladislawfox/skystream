@@ -41,6 +41,15 @@ void main() {
         '--adaptive-maxheight=1080',
       ]);
     });
+
+    // libVLC 3 already puts prefetch in front of every network access as its
+    // cache stage (src/input/access.c). Naming it again stacked a second,
+    // identical filter, and each allocates the whole size up front - so the
+    // buffer a viewer chose was reserved twice.
+    test('sizes the prefetch buffer without stacking a second filter', () {
+      const config = VlcNetworkConfig(prefetchBufferKiB: 262144);
+      expect(config.toOptions(), <String>['--prefetch-buffer-size=262144']);
+    });
   });
 
   group('VlcDecodingConfig', () {

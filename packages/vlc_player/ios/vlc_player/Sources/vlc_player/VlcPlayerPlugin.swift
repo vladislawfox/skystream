@@ -430,7 +430,17 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate, VlcPipPlayb
     target: VlcRenderTarget
   ) {
     renderTarget = target
-    mediaPlayer = VLCMediaPlayer(options: options)
+    var instanceOptions = options
+    if case .texture = target {
+      // The texture sink has libVLC scale every VideoToolbox picture two rows
+      // taller so that subtitles can be drawn on it (kSubtitleRows in
+      // VlcTextureRenderer.mm). macOS does that on the GPU; MobileVLCKit has
+      // no CoreVideo scaler, so on iOS it is swscale on the CPU, and its
+      // default bicubic costs several times what a two-row stretch shows.
+      // Present in MobileVLCKit 3.7.3's option table.
+      instanceOptions.append("--swscale-mode=0")
+    }
+    mediaPlayer = VLCMediaPlayer(options: instanceOptions)
     eventChannel = FlutterEventChannel(name: "vlc_player/events/\(viewId)", binaryMessenger: messenger)
 
     switch target {

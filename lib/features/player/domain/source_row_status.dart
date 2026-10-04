@@ -21,8 +21,16 @@ enum SourceReachability {
   /// The check got an answer from it.
   reachable,
 
+  /// The check got an answer, from a server that ignores byte ranges: it
+  /// plays, but only from its start.
+  unseekable,
+
   /// The check got no answer from it.
   unreachable,
+
+  /// The check got an answer, and it was a web page rather than anything to
+  /// play.
+  notVideo,
 
   /// Nobody has asked: the check only looks at the top few sources, and
   /// cannot look at a torrent or a local file at all. Not "unknown", which
@@ -73,15 +81,23 @@ SourceReachability sourceReachabilityOf(
 }) {
   // A source on screen was reached, whatever the probe said - or could not
   // say. Otherwise a playing torrent read "not checked", and a slow host the
-  // probe gave up on read "unreachable" under its own picture.
-  if (hasPlayed) return SourceReachability.reachable;
+  // probe gave up on read "unreachable" under its own picture. Reaching it
+  // proves nothing about seeking, though, which is what a viewer wonders
+  // about while it plays.
+  if (hasPlayed) {
+    return probe == ProbeOutcome.unseekable
+        ? SourceReachability.unseekable
+        : SourceReachability.reachable;
+  }
   // The probe passes these without asking, so its pass says nothing.
   if (isUncheckableSource(stream)) return SourceReachability.notChecked;
   return switch (probe) {
     null => SourceReachability.notChecked,
     ProbeOutcome.trying => SourceReachability.checking,
     ProbeOutcome.healthy => SourceReachability.reachable,
+    ProbeOutcome.unseekable => SourceReachability.unseekable,
     ProbeOutcome.unhealthy => SourceReachability.unreachable,
+    ProbeOutcome.notVideo => SourceReachability.notVideo,
   };
 }
 

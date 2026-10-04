@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:vlc_player/vlc_player.dart';
+import 'package:skystream/core/providers/device_info_provider.dart';
+import 'package:skystream/features/player/domain/network_buffer.dart';
 import 'package:skystream/features/player/presentation/widgets/player_stream_widgets.dart';
 
 import 'fake_vlc_engine.dart';
@@ -97,6 +100,113 @@ void main() {
 
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets(
+    'a step back is measured from where the viewer sent playback',
+    variant: texturePlatform,
+    (tester) async {
+      // A backend keeps publishing the old position, still ticking, until the
+      // seek takes. Measured from that, a step back looks like playback carrying
+      // on, and the band went on claiming the buffer libVLC throws away on
+      // every seek backwards.
+      await pumpPlayer(tester);
+      final controller = tester
+          .widget<VlcPlayer>(find.byType(VlcPlayer, skipOffstage: false))
+          .controller;
+      Future<void> tick(int positionMs) => sendEvent(
+        tester,
+        engine.event(<String, Object?>{
+          'duration': 600000,
+          'position': positionMs,
+        }),
+      );
+
+      // One minute in, 1 MB/s, thirty seconds buffered.
+      await tick(60000);
+      await settle(tester);
+      var demux = 10000000;
+      var position = 60000;
+      for (var i = 0; i < 4; i++) {
+        demux += 1000000;
+        position += 1000;
+        stats(read: demux + 30000000, demux: demux);
+        await tick(position);
+        await tester.pump(const Duration(seconds: 1));
+        await settle(tester);
+      }
+      expect(
+        bandRatio(tester),
+        greaterThan(80 / 600),
+        reason: 'a band to lose',
+      );
+
+      // Thirty seconds back, and the old position carries on ticking. libVLC
+      // has thrown the thirty seconds away and is reading again from 0:34.
+      await controller.seekTo(const Duration(seconds: 34));
+      const thrownAway = 30000000;
+      for (var i = 0; i < 3; i++) {
+        demux += 1000000;
+        position += 1000;
+        stats(read: demux + thrownAway, demux: demux);
+        await tick(position);
+        await tester.pump(const Duration(seconds: 1));
+        await settle(tester);
+      }
+
+      expect(
+        bandRatio(tester),
+        lessThan(40 / 600),
+        reason: 'nothing is buffered past the target yet',
+      );
+
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'the band stops at what the buffer can hold',
+    variant: texturePlatform,
+    (tester) async {
+      // A forward seek that emptied libVLC's buffer strands only the seconds
+      // it skipped, so the counters go on showing the old buffer as well as
+      // the new one. Past what the buffer can hold, the band claimed more
+      // than ten minutes and disappeared.
+      await pumpPlayer(tester);
+      Future<void> tick(int positionMs) => sendEvent(
+        tester,
+        engine.event(<String, Object?>{
+          'duration': 3600000,
+          'position': positionMs,
+        }),
+      );
+
+      await tick(60000);
+      await settle(tester);
+      var demux = 10000000;
+      var position = 60000;
+      for (var i = 0; i < 5; i++) {
+        demux += 1000000;
+        position += 1000;
+        stats(read: demux + 1000000000, demux: demux);
+        await tick(position);
+        await tester.pump(const Duration(seconds: 1));
+        await settle(tester);
+      }
+
+      // The standard tier's 256 MB, at the rate the sampler measured - 1 MB/s,
+      // or half that where a reading lands a tick late.
+      final capacity = defaultNetworkBufferMb(DeviceTier.standard) * 1048576;
+      expect(bandRatio(tester), greaterThan(0), reason: 'not blank');
+      expect(
+        bandRatio(tester),
+        lessThanOrEqualTo(
+          (position / 1000 + 2 * capacity / 1000000 + 1) / 3600,
+        ),
+      );
+
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets('the band empties rather than freezing when the estimate goes', variant: texturePlatform, (
     tester,

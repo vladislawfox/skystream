@@ -284,6 +284,8 @@
   "liveStreams": "На живо",
   "debug": "DEBUG",
   "extensionsUpdated": "{count, plural, one{1 разширение е актуализирано} other{{count} разширения са актуализирани}}",
+  "extensionsNewRepositories": "{count, plural, one{Ново хранилище в {source}} other{{count} нови хранилища в {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{Нов плъгин в {repository}} other{{count} нови плъгина в {repository}}}",
   "invalidNavigation": "Невалидна навигация.",
   "startOver": "Започни отначало",
   "goBack": "Назад",

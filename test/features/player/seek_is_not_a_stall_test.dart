@@ -84,6 +84,137 @@ void main() {
   );
 
   testWidgets(
+    'a nudge while a seek is on its way re-sends the seek, not the old '
+    'position',
+    variant: texturePlatform,
+    (tester) async {
+      // The nudge re-seeks to shake a quiet source loose. Taken from the
+      // published position it went to the place the viewer had just left -
+      // every backend keeps publishing that until the seek lands - so a skip
+      // on a slow source ended with the picture jumping back and
+      // "Reconnecting" on screen.
+      await pumpPlayer(tester);
+      await sendFirstFrame(tester);
+      final player = tester.widget<VlcPlayer>(
+        find.byType(VlcPlayer, skipOffstage: false),
+      );
+
+      await player.controller.seekTo(const Duration(minutes: 10));
+      for (var i = 0; i < kStallNudgeAfterSeek.inSeconds + 1; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      final seeks = <Object?>[
+        for (final call in engine.callsTo('seekTo'))
+          (call.arguments as Map)['position'],
+      ];
+      expect(seeks.length, greaterThan(1), reason: 'the nudge seeked');
+      expect(seeks.last, const Duration(minutes: 10).inMilliseconds);
+
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  /// Stats as the engine reports them, with [read] bytes fetched so far.
+  void fetched(int read) {
+    engine.mediaStats = <String, Object?>{
+      'available': true,
+      'displayedPictures': 100,
+      'lostPictures': 0,
+      'readBytes': read,
+      'demuxReadBytes': 1000000,
+    };
+  }
+
+  testWidgets(
+    'a seek still refilling is not nudged, and not called a reconnect',
+    variant: texturePlatform,
+    (tester) async {
+      // After a seek a 4K remux fetches its keyframe run-up and three seconds
+      // of buffer before it plays again, which on an ordinary line outlasts
+      // the nudge. The nudge's fresh request threw the refill away and
+      // started it over, with "Reconnecting" on screen the whole time.
+      await pumpPlayer(tester);
+      await sendFirstFrame(tester);
+      final l10n = await english();
+      final player = tester.widget<VlcPlayer>(
+        find.byType(VlcPlayer, skipOffstage: false),
+      );
+      final opensBefore = engine.methods.where((m) => m == 'setSource').length;
+
+      await player.controller.seekTo(const Duration(minutes: 10));
+      var read = 50000000;
+      for (var i = 0; i < kStallRecoverAfter.inSeconds + 5; i++) {
+        read += 2000000;
+        fetched(read);
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      expect(engine.callsTo('seekTo'), hasLength(1), reason: 'no nudge');
+      expect(find.text(l10n.playerReconnecting), findsNothing);
+      expect(
+        engine.methods.where((m) => m == 'setSource').length,
+        opensBefore,
+        reason: 'nor a reopen at the usual deadline',
+      );
+
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'one whose bytes have stopped as well is nudged as before',
+    variant: texturePlatform,
+    (tester) async {
+      // The counters are there and say nothing is coming: a half-open socket,
+      // which is what the nudge is for.
+      await pumpPlayer(tester);
+      await sendFirstFrame(tester);
+      final l10n = await english();
+      final player = tester.widget<VlcPlayer>(
+        find.byType(VlcPlayer, skipOffstage: false),
+      );
+
+      fetched(50000000);
+      await player.controller.seekTo(const Duration(minutes: 10));
+      for (var i = 0; i < kStallNudgeAfterSeek.inSeconds + 2; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      expect(engine.callsTo('seekTo').length, greaterThan(1));
+      expect(find.text(l10n.playerReconnecting), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'a refill after a seek gets longer before it is called a reconnect',
+    variant: texturePlatform,
+    (tester) async {
+      // With no counters to go by - libVLC's stand still while its input
+      // thread waits on the refill - a seek still gets time for its keyframe
+      // run-up and buffer before anyone says "Reconnecting".
+      await pumpPlayer(tester);
+      await sendFirstFrame(tester);
+      final l10n = await english();
+      final player = tester.widget<VlcPlayer>(
+        find.byType(VlcPlayer, skipOffstage: false),
+      );
+
+      await player.controller.seekTo(const Duration(minutes: 10));
+      for (var i = 0; i < kStallNudgeAfter.inSeconds + 5; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      expect(engine.callsTo('seekTo'), hasLength(1), reason: 'no nudge yet');
+      expect(find.text(l10n.playerReconnecting), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'a freeze nobody asked for is still caught',
     variant: texturePlatform,
     (tester) async {

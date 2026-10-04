@@ -13,13 +13,12 @@ import 'vlc_screen_harness.dart';
 /// `--network-caching` is output latency: every stream has to fill it before
 /// it emits anything, so a large value there made a newly selected audio track
 /// silent for exactly that long. `--prefetch-buffer-size` sits under the
-/// demuxer instead and holds a window either side of the read point, so a
-/// larger one costs memory and nothing else. It is what makes a seek land
-/// without going back to the network, in either direction.
+/// demuxer instead and holds what has been read ahead of it, so a larger one
+/// costs memory and rides out a slow patch of network.
 ///
-/// The prefetch filter scores 0 in libVLC, which means it is never selected on
-/// its own - `--stream-filter=prefetch` has to name it, and the two options
-/// only mean anything together.
+/// libVLC 3 inserts the prefetch filter itself, as the cache stage of every
+/// network access, so the size is the only option: naming the filter as well
+/// stacked a second one and reserved the buffer twice.
 void main() {
   _torrentSplitTests();
   late FakeVlcEngine engine;
@@ -36,17 +35,14 @@ void main() {
     return (arguments['options'] as List<Object?>).cast<String>();
   }
 
-  group('the option pair', () {
-    test('a buffer size names the filter as well', () {
+  group('the buffer option', () {
+    test('a buffer size is the size alone, with no second filter', () {
       const config = VlcNetworkConfig(prefetchBufferKiB: 16384);
 
-      expect(config.toOptions(), containsAll(<String>[
-        '--stream-filter=prefetch',
-        '--prefetch-buffer-size=16384',
-      ]));
+      expect(config.toOptions(), <String>['--prefetch-buffer-size=16384']);
     });
 
-    test('no buffer size means neither option, so libVLC keeps its own', () {
+    test('no buffer size means no option, so libVLC keeps its own', () {
       const config = VlcNetworkConfig();
 
       expect(
@@ -63,7 +59,11 @@ void main() {
     await settle(tester);
 
     final options = createdOptions();
-    expect(options, contains('--stream-filter=prefetch'));
+    expect(
+      options,
+      isNot(contains('--stream-filter=prefetch')),
+      reason: 'libVLC inserts the filter itself; naming it stacks a second',
+    );
 
     // Nothing chosen, so this device's default applies. The harness reports
     // no device profile, which resolves to the standard tier.

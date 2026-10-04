@@ -12,11 +12,15 @@ void main() {
       bool hadFrames = true,
       StallAction last = StallAction.none,
       Duration? recoverAfter,
+      bool arriving = false,
+      bool afterSeek = false,
     }) => stallActionFor(
       stalledFor: Duration(seconds: seconds),
       hadFrames: hadFrames,
       lastAction: last,
       recoverAfter: recoverAfter ?? kStallRecoverAfter,
+      arriving: arriving,
+      afterSeek: afterSeek,
     );
 
     test('healthy playback asks for nothing', () {
@@ -45,6 +49,80 @@ void main() {
     // seconds walking it.
     test('a long freeze escalates straight past the nudge', () {
       expect(at(600), StallAction.recover);
+    });
+
+    // Bytes still arriving mean the source is refilling, not quiet: a 4K
+    // remux needs its keyframe run-up and three seconds of buffer before it
+    // plays again after a seek, and on an ordinary line that outlasts the
+    // nudge. The nudge's fresh request threw the refill away and started it
+    // over.
+    group('while bytes are still arriving', () {
+      test('there is no nudge', () {
+        expect(at(10, arriving: true), StallAction.none);
+        expect(at(24, arriving: true), StallAction.none);
+      });
+
+      test('and no recovery at the usual deadline', () {
+        expect(at(25, arriving: true), StallAction.none);
+        expect(at(59, arriving: true), StallAction.none);
+      });
+
+      test('but a trickle is still given up on in the end', () {
+        expect(
+          at(kStallRecoverWhileArrivingAfter.inSeconds, arriving: true),
+          StallAction.recover,
+        );
+      });
+
+      test('a longer deadline of its own still applies', () {
+        expect(
+          at(60, arriving: true, recoverAfter: kTorrentStallRecoverAfter),
+          StallAction.none,
+        );
+        expect(
+          at(181, arriving: true, recoverAfter: kTorrentStallRecoverAfter),
+          StallAction.recover,
+        );
+      });
+
+      test('once they stop, the ladder resumes where the clock is', () {
+        expect(at(30), StallAction.recover);
+        expect(at(12), StallAction.nudge);
+      });
+    });
+
+    // A seek has a keyframe run-up and a fresh buffer to fetch before the
+    // picture moves again, and while libVLC's input thread waits on that read
+    // its byte counters do not move either - so a slow refill cannot be told
+    // from a dead source by them, and gets time instead.
+    group('after a seek', () {
+      test('the nudge waits longer', () {
+        expect(at(10, afterSeek: true), StallAction.none);
+        expect(at(19, afterSeek: true), StallAction.none);
+        expect(
+          at(kStallNudgeAfterSeek.inSeconds, afterSeek: true),
+          StallAction.nudge,
+        );
+      });
+
+      test('and so does recovery', () {
+        expect(
+          at(25, afterSeek: true, last: StallAction.nudge),
+          StallAction.none,
+        );
+        expect(
+          at(
+            kStallRecoverAfterSeek.inSeconds,
+            afterSeek: true,
+            last: StallAction.nudge,
+          ),
+          StallAction.recover,
+        );
+      });
+
+      test('bytes arriving still hold off the nudge altogether', () {
+        expect(at(30, afterSeek: true, arriving: true), StallAction.none);
+      });
     });
 
     group('before the first frame', () {
@@ -165,6 +243,78 @@ void main() {
         isNull,
       );
     });
+
+    // Failing over mid-film resumes where it stopped, and a source whose server
+    // ignores byte ranges would start it again from the top.
+    test('passes over candidates that cannot seek while there are others', () {
+      expect(
+        nextFailoverIndex(from: 0, total: 4, tried: {0}, cannotSeek: {1}),
+        2,
+      );
+    });
+
+    test('takes one that cannot seek before one the check found dead', () {
+      expect(
+        nextFailoverIndex(
+          from: 0,
+          total: 4,
+          tried: {0, 3},
+          unreachable: {1},
+          cannotSeek: {2},
+        ),
+        2,
+      );
+    });
+  });
+
+  // Resuming on a source whose server ignores byte ranges plays the film from
+  // the top: libVLC cannot jump into it, so the viewer's place is lost.
+  group('resumeSourceIndex', () {
+    test('keeps the chosen source when it can seek, or nobody knows', () {
+      expect(
+        resumeSourceIndex(
+          preferred: 0,
+          total: 3,
+          probes: {0: ProbeOutcome.healthy},
+        ),
+        0,
+      );
+      expect(
+        resumeSourceIndex(
+          preferred: 1,
+          total: 3,
+          probes: const <int, ProbeOutcome>{},
+        ),
+        1,
+      );
+    });
+
+    test('moves off one that cannot seek to one found able to', () {
+      expect(
+        resumeSourceIndex(
+          preferred: 0,
+          total: 4,
+          probes: {
+            0: ProbeOutcome.unseekable,
+            1: ProbeOutcome.unhealthy,
+            2: ProbeOutcome.notVideo,
+            3: ProbeOutcome.healthy,
+          },
+        ),
+        3,
+      );
+    });
+
+    test('stays when none able to seek has been found', () {
+      expect(
+        resumeSourceIndex(
+          preferred: 0,
+          total: 3,
+          probes: {0: ProbeOutcome.unseekable, 1: ProbeOutcome.trying},
+        ),
+        0,
+      );
+    });
   });
 
   // Where to go when a source being opened turns out unreachable: back to one
@@ -195,6 +345,27 @@ void main() {
           except: 1,
         ),
         2,
+      );
+    });
+
+    test('prefers one that can seek, and still counts one that cannot', () {
+      expect(
+        firstReachableIndex(
+          total: 3,
+          probes: {0: ProbeOutcome.unseekable, 1: ProbeOutcome.healthy},
+          failed: const <int>{},
+          except: 2,
+        ),
+        1,
+      );
+      expect(
+        firstReachableIndex(
+          total: 3,
+          probes: {0: ProbeOutcome.unseekable, 1: ProbeOutcome.notVideo},
+          failed: const <int>{},
+          except: 2,
+        ),
+        0,
       );
     });
 

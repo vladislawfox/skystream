@@ -284,6 +284,8 @@
   "liveStreams": "Стримови во живо",
   "debug": "ДЕБАГИРАЊЕ",
   "extensionsUpdated": "{count, plural, one{1 екстензија е ажурирана} other{{count} екстензии се ажурирани}}",
+  "extensionsNewRepositories": "{count, plural, one{{count} ново складиште во {source}} other{{count} нови складишта во {source}}}",
+  "extensionsNewPlugins": "{count, plural, one{{count} нов приклучок во {repository}} other{{count} нови приклучоци во {repository}}}",
   "invalidNavigation": "Невалидна навигација. Ве молиме вратете се.",
   "startOver": "Почни од почеток",
   "goBack": "Назад",

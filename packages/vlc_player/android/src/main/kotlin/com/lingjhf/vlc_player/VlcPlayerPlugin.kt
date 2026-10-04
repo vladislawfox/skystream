@@ -101,6 +101,11 @@ class VlcPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 }
                 player.setFit(fit, result)
             }
+            "setVideoGeometry" -> player.setVideoGeometry(
+                call.argument<String>("crop"),
+                call.argument<String>("aspectRatio"),
+                result,
+            )
             "setVolume" -> {
                 val volume = call.argument<Number>("volume")?.toInt()
                 if (volume == null) {

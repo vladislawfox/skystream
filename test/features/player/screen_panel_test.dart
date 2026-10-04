@@ -36,11 +36,12 @@ import 'vlc_screen_harness.dart';
 /// An episode advance under an open panel is the one moment every input the
 /// panel reads changes media at once, so most of what is here is about that.
 ///
-/// A probe is made slow with `runWithClient` and a client that holds the HEAD.
-/// A probe cannot be made to answer unhealthy through a returned response: the
-/// ranged GET it falls through to ends in `resp.stream.listen(...).cancel()`,
-/// which never completes under flutter_test's fake async, so the client throws
-/// for that leg instead.
+/// A probe is made slow with `runWithClient` and a client that holds its
+/// requests. A dead candidate refuses the probe's ranged GET - the client
+/// throws - and answers the HEAD it falls back to with a 4xx. A live one
+/// answers like a media server, serving the range: a plain 200 to a ranged
+/// request says the server ignores ranges, which the row calls "Can't seek",
+/// and a body the probe reads is a stream under flutter_test's fake async.
 ///
 /// History with a position and a length for named episode URLs, so the panel
 /// has something real to read. Everything else answers zero, as [NoHistory].
@@ -324,7 +325,7 @@ void main() {
     variant: texturePlatform,
     (tester) async {
       // Alpha answers at once, so the first episode opens on it; Beta and
-      // Gamma are held, which is what a real HEAD against a slow CDN does -
+      // Gamma are held, which is what a real probe against a slow CDN does -
       // the resolve returns the moment the best candidate is known and the
       // losing probes keep running for seconds behind it.
       final held = Completer<void>();
@@ -332,12 +333,19 @@ void main() {
         // Alpha, and the next episode's own two, answer at once.
         for (final instant in const <String>['alpha', 'delta', 'epsilon']) {
           if (request.url.path.contains(instant)) {
-            return http.Response('', 200);
+            return http.Response(
+              '',
+              206,
+              headers: {
+                'content-type': 'video/x-matroska',
+                'content-range': 'bytes 0-1023/1048576',
+              },
+            );
           }
         }
         await held.future;
-        // A HEAD that answers 4xx sends the probe on to a one-byte ranged
-        // GET, and refusing that is how a dead candidate reads on the wire.
+        // A refused ranged GET sends the probe on to a HEAD, and a 4xx there
+        // is how a dead candidate reads on the wire.
         if (request.method == 'HEAD') return http.Response('', 404);
         throw http.ClientException('refused', request.url);
       });
